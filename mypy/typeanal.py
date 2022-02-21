@@ -26,7 +26,8 @@ from mypy.nodes import (
     TypeInfo, Context, SymbolTableNode, Var, Expression,
     get_nongen_builtins, check_arg_names, check_arg_kinds, ArgKind, ARG_POS, ARG_NAMED,
     ARG_OPT, ARG_NAMED_OPT, ARG_STAR, ARG_STAR2, TypeVarExpr, TypeVarLikeExpr, ParamSpecExpr,
-    TypeAlias, PlaceholderNode, SYMBOL_FUNCBASE_TYPES, Decorator, MypyFile
+    TypeAlias, PlaceholderNode, SYMBOL_FUNCBASE_TYPES, Decorator, MypyFile,
+    RefinementVarExpr,
 )
 from mypy.typetraverser import TypeTraverserVisitor
 from mypy.tvar_scope import TypeVarLikeScope
@@ -431,8 +432,12 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
         # Possibly I need to look at how type variables are handled. Look at
         # visit_unbound_type_nonoptional.
         sym = self.lookup_qualified(name, t)
-        if sym is None:
-            self.fail("Couldn't find symbol related to refinement variable", name)
+        if sym is None or sym.node is None:
+            self.fail("Couldn't find symbol related to refinement variable", t)
+            return None
+
+        if not isinstance(sym.node, RefinementVarExpr):
+            self.fail("type is not declarated as a refinement var", t)
             return None
 
         return RefinementVar(name, props)

@@ -2225,6 +2225,45 @@ class TypeVarLikeExpr(SymbolNode, Expression):
         return self._fullname
 
 
+class RefinementVarExpr(SymbolNode, Expression):
+    """A refinement variable expression RefinementVar(...).
+    """
+
+    _name: str
+    _fullname: str
+
+    def __init__(self, name: str, fullname: str):
+        super().__init__()
+        self._name = name
+        self._fullname = fullname
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def fullname(self) -> str:
+        return self._fullname
+
+    def accept(self, visitor: ExpressionVisitor[T]) -> T:
+        return visitor.visit_refinement_var_expr(self)
+
+    def serialize(self) -> JsonDict:
+        return {
+            '.class': 'RefinementVarExpr',
+            'name': self._name,
+            'fullname': self._fullname,
+        }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> 'RefinementVarExpr':
+        assert data['.class'] == 'RefinementVarExpr'
+        return RefinementVarExpr(
+            data['name'],
+            data['fullname'],
+        )
+
+
 class TypeVarExpr(TypeVarLikeExpr):
     """Type variable expression TypeVar(...).
 

@@ -78,7 +78,7 @@ from mypy.nodes import (
     typing_extensions_aliases,
     EnumCallExpr, RUNTIME_PROTOCOL_DECOS, FakeExpression, Statement, AssignmentExpr,
     ParamSpecExpr, EllipsisExpr, TypeVarLikeExpr, implicit_module_attrs,
-    MatchStmt,
+    MatchStmt, RefinementVarExpr,
 )
 from mypy.patterns import (
     AsPattern, OrPattern, ValuePattern, SequencePattern,
@@ -2064,6 +2064,9 @@ class SemanticAnalyzer(NodeVisitor[None],
         if self.check_and_set_up_type_alias(s):
             s.is_alias_def = True
             special_form = True
+        # * refinement variable definition (similar to type variables)
+        elif self.process_refinementvar_declaration(s):
+            special_form = True
         # * type variable definition
         elif self.process_typevar_declaration(s):
             special_form = True
@@ -3077,6 +3080,41 @@ class SemanticAnalyzer(NodeVisitor[None],
         else:
             # This has been flagged elsewhere as an error, so just ignore here.
             pass
+
+    def process_refinementvar_declaration(self, s: AssignmentStmt) -> bool:
+        """Check if s declares a refinement variable; if yes, store it
+        in the symbol table.
+
+        Return True if this is a RefinementVar declaration.
+        """
+        call = self.get_typevarlike_declaration(s, ("refinement.RefinementVar",))
+        if not call:
+            return False
+
+        lvalue = s.lvalues[0]
+        assert isinstance(lvalue, NameExpr)
+        if s.type:
+            self.fail("Cannot declare the type of a refinement variable", s)
+            return False
+
+        name = lvalue.name
+        if not self.check_typevarlike_name(call, name, s):
+            return False
+
+        if len(call.args) > 1:
+            self.fail(
+                "Only the first argument to RefinementVar has defined semantics",
+                s,
+            )
+
+        if not call.analyzed:
+            refinement_var = RefinementVarExpr(name, self.qualified_name(name))
+            refinement_var.line = call.line
+            call.analyzed = refinement_var
+        else:
+            assert isinstance(call.analyzed, RefinementVarExpr)
+        self.add_symbol(name, call.analyzed, s)
+        return True
 
     def process_typevar_declaration(self, s: AssignmentStmt) -> bool:
         """Check if s declares a TypeVar; it yes, store it in symbol table.

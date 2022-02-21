@@ -32,7 +32,7 @@ from mypy.nodes import (
     DictionaryComprehension, ComplexExpr, EllipsisExpr, StarExpr, AwaitExpr, YieldExpr,
     YieldFromExpr, TypedDictExpr, PromoteExpr, NewTypeExpr, NamedTupleExpr, TypeVarExpr,
     TypeAliasExpr, BackquoteExpr, EnumCallExpr, TypeAlias, SymbolNode, PlaceholderNode,
-    ParamSpecExpr,
+    ParamSpecExpr, RefinementVarExpr,
     ArgKind, ARG_POS, ARG_NAMED, ARG_STAR, ARG_STAR2, LITERAL_TYPE, REVEAL_TYPE,
 )
 from mypy.literals import literal
@@ -4173,6 +4173,9 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
     def visit_temp_node(self, e: TempNode) -> Type:
         return e.type
+
+    def visit_refinement_var_expr(self, e: RefinementVarExpr) -> Type:
+        return AnyType(TypeOfAny.special_form)
 
     def visit_type_var_expr(self, e: TypeVarExpr) -> Type:
         return AnyType(TypeOfAny.special_form)

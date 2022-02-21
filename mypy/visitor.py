@@ -154,6 +154,10 @@ class ExpressionVisitor(Generic[T]):
         pass
 
     @abstractmethod
+    def visit_refinement_var_expr(self, o: 'mypy.nodes.RefinementVarExpr') -> T:
+        pass
+
+    @abstractmethod
     def visit_type_var_expr(self, o: 'mypy.nodes.TypeVarExpr') -> T:
         pass
 

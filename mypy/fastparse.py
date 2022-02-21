@@ -1409,7 +1409,14 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
             return None
 
     if isinstance(node, ast3.Tuple):
-        return RefinementTuple([convert_sub_expr(e) for e in node.elts])
+        values = []
+        for e in node.elts:
+            v = convert_sub_expr(e)
+            if v is None:
+                return None
+            else:
+                values.append(v)
+        return RefinementTuple(values)
     else:
         return convert_sub_expr(node)
 
@@ -1431,7 +1438,6 @@ class RefinementExprConverter:
             return visitor(node)
         else:
             return None
-
 
 
 class TypeConverter:
@@ -1605,6 +1611,8 @@ class TypeConverter:
             assert len(n.comparators) == 1
             left = convert_refinement_expr(n.left)
             right = convert_refinement_expr(n.comparators[0])
+            if left is None or right is None:
+                return self.invalid_type(n)
             return ConstraintSynType(RefinementConstraint(left, right))
         return self.invalid_type(n)
 
