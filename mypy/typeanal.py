@@ -19,6 +19,7 @@ from mypy.types import (
     PlaceholderType, Overloaded, get_proper_type, TypeAliasType, RequiredType,
     TypeVarLikeType, ParamSpecType, ParamSpecFlavor, callable_with_ellipsis,
     TYPE_ALIAS_NAMES, FINAL_TYPE_NAMES, LITERAL_TYPE_NAMES, ANNOTATED_TYPE_NAMES,
+    RefinementVar, RefinementConstraint, RefinementInfo, BaseType, ConstraintSynType,
 )
 
 from mypy.nodes import (
@@ -357,7 +358,43 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                 self.fail("Annotated[...] must have exactly one type argument"
                           " and at least one annotation", t)
                 return AnyType(TypeOfAny.from_error)
-            return self.anal_type(t.args[0])
+
+            # Here we deal with constraint stuff. For now we're going to assume
+            # that all Annotated are refinement types. This will probably change
+            # later, but for now it's convenient.
+
+            # we use this to convert all unbound names to refinement variables.
+            root = self.anal_type(t.args[0])
+
+            if not isinstance(root, BaseType):
+                print("non-base type was refined:", type(root))
+                self.fail("Only BaseTypes can have refinement annotations.",
+                        root)
+                return AnyType(TypeOfAny.from_error)
+
+            if root.refinements is not None:
+                self.fail("Cannot refine an already refined type (for now)",
+                        root)
+                return AnyType(TypeOfAny.from_error)
+
+            local_var = self.convert_type_to_refinement_var(t.args[1])
+            if local_var is None:
+                self.fail("All Annotated refinement types need a variable as the"
+                        " second argument", t)
+                return AnyType(TypeOfAny.from_error)
+
+            constraints: list[RefinementConstraint] = []
+            for c in t.args[2:]:
+                if isinstance(c, ConstraintSynType):
+                    constraints.append(c.value)
+                else:
+                    self.fail("All Annotated refinement types accept only "
+                            "constraints after the first two arguments.", c)
+                    return AnyType(TypeOfAny.from_error)
+
+            root.refinements = RefinementInfo(local_var, constraints)
+
+            return root
         elif fullname in ('typing_extensions.Required', 'typing.Required'):
             if not self.allow_required:
                 self.fail("Required[] can be only used in a TypedDict definition", t)
@@ -378,6 +415,27 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
             # In most contexts, TypeGuard[...] acts as an alias for bool (ignoring its args)
             return self.named_type('builtins.bool')
         return None
+
+    def convert_type_to_refinement_var(self, t: Type) -> Optional[RefinementVar]:
+        """Convert an unbound type to a refinement variable.
+        """
+        if not isinstance(t, UnboundType) or t.name is None:
+            return None
+
+        props = t.name.split(".")
+        name = props.pop(0)
+
+        # TODO: expand this to take advantage of the information in sym.
+        # This is how we read information about the definition of the refinement
+        # variables.
+        # Possibly I need to look at how type variables are handled. Look at
+        # visit_unbound_type_nonoptional.
+        sym = self.lookup_qualified(name, t)
+        if sym is None:
+            self.fail("Couldn't find symbol related to refinement variable", name)
+            return None
+
+        return RefinementVar(name, props)
 
     def get_omitted_any(self, typ: Type, fullname: Optional[str] = None) -> AnyType:
         disallow_any = not self.is_typeshed_stub and self.options.disallow_any_generics

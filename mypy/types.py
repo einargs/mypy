@@ -387,6 +387,162 @@ class ProperType(Type):
     __slots__ = ()
 
 
+class RefinementExpr:
+    __slots__ = ()
+
+    def serialize(self) -> Union[JsonDict, str]:
+        raise NotImplementedError('Cannot serialize {} instance'.format(self.__class__.__name__))
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> 'RefinementExpr':
+        raise NotImplementedError('Cannot deserialize {} instance'.format(cls.__name__))
+
+
+def deserialize_refinement_expr(data: JsonDict) -> RefinementExpr:
+    classname = data['.class']
+    method = deserialize_refinement_expr_map.get(classname)
+    if method is not None:
+        return method(data)
+    raise NotImplementedError('unexpected .class {}'.format(classname))
+
+
+class RefinementLiteral(RefinementExpr):
+    """An integer literal in a refinement constraint.
+    """
+
+    __slots__ = ('value',)
+
+    def __init__(self, value: int):
+        self.value = value
+
+    def serialize(self) -> JsonDict:
+        return {'.class': 'RefinementLiteral',
+                'value': self.value,
+                }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> 'RefinementLiteral':
+        assert data['.class'] == 'RefinementLiteral'
+        return RefinementLiteral(data['value'])
+
+
+class RefinementTuple(RefinementExpr):
+    """A tuple of refinement expressions.
+    """
+
+    __slots__ = ('items',)
+
+    def __init__(self, items: list[RefinementExpr]):
+        self.items = items
+
+    def serialize(self) -> JsonDict:
+        return {'.class': 'RefinementTuple',
+                'items': [v.serialize() for v in self.items],
+                }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> 'RefinementTuple':
+        assert data['.class'] == 'RefinementTuple'
+        return RefinementTuple(
+                [deserialize_refinement_expr(v) for v in data['items']])
+
+
+class RefinementVar(RefinementExpr):
+    """A variable inside a refinement type's predicate.
+    """
+
+    __slots__ = ('name', 'props')
+
+    def __init__(self, name: str, props: list[str] = []):
+        self.name = name
+        self.props = props
+
+    def serialize(self) -> JsonDict:
+        return {'.class': 'RefinementVar',
+                'name': self.name,
+                'props': self.props,
+                }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> 'RefinementVar':
+        assert data['.class'] == 'RefinementVar'
+        return RefinementVar(data['name'], data['props'])
+
+
+class RefinementConstraint:
+    """A constraint on a base type. Can constraint integers, tuples of integers,
+    or properties that are integers of tuples of integers.
+    """
+
+    __slots__ = ('left', 'right')
+
+    def __init__(self, left: RefinementExpr, right: RefinementExpr):
+        self.left = left
+        self.right = right
+
+    def serialize(self) -> JsonDict:
+        return {'left': self.left.serialize(),
+                'right': self.right.serialize(),
+                }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> 'RefinementConstraint':
+        return ConstraintType(
+                deserialize_refinement_expr(data['left']),
+                deserialize_refinement_expr(data['right']))
+
+
+class RefinementInfo:
+    """All information about a refined base type.
+    """
+
+    __slots__ = ('var', 'constraints')
+
+    def __init__(
+            self,
+            var: RefinementVar,
+            constraints: list[RefinementConstraint]):
+        self.var = var
+        self.constraints = constraints
+
+    def serialize(self) -> JsonDict:
+        return {'var': self.var.serialize(),
+                'constraints': [c.serialize() for c in self.constraints],
+                }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> 'RefinementInfo':
+        assert data['.class'] == 'RefinementInfo'
+        return RefinementInfo(
+                RefinementVar.deserialize(data['var']),
+                [RefinementConstraint.deserialize(c) for c in data['constraints']])
+
+
+class BaseType(ProperType):
+    """A type that can have refinement constraints added to it.
+    """
+
+    __slots__ = ('refinements',)
+
+    def __init__(self,
+            line: int = -1,
+            column: int = -1,
+            refinements: Optional[RefinementInfo] = None):
+        self.refinements = refinements
+        super().__init__(line, column)
+
+
+class ConstraintSynType(ProperType):
+    """A synthetic type that holds refinement constraint information until
+    it can be properly parsed once annotation statements have been identified.
+    """
+
+    __slots__ = ('value',)
+
+    def __init__(self, value: RefinementConstraint):
+        self.value = value
+
+
 class TypeVarId:
     # A type variable is uniquely identified by its raw id and meta level.
 
@@ -880,7 +1036,7 @@ class UninhabitedType(ProperType):
         return UninhabitedType(is_noreturn=data['is_noreturn'])
 
 
-class NoneType(ProperType):
+class NoneType(BaseType):
     """The type of 'None'.
 
     This type can be written by users as 'None'.
@@ -888,8 +1044,9 @@ class NoneType(ProperType):
 
     __slots__ = ()
 
-    def __init__(self, line: int = -1, column: int = -1) -> None:
-        super().__init__(line, column)
+    def __init__(self, line: int = -1, column: int = -1,
+            refinements: Optional[RefinementInfo] = None) -> None:
+        super().__init__(line, column, refinements)
 
     def can_be_true_default(self) -> bool:
         return False
@@ -904,12 +1061,17 @@ class NoneType(ProperType):
         return visitor.visit_none_type(self)
 
     def serialize(self) -> JsonDict:
-        return {'.class': 'NoneType'}
+        data: JsonDict = {'.class': 'NoneType'}
+        if self.refinements is not None:
+            data['refinements'] = self.refinements.serialize()
+        return data
 
     @classmethod
     def deserialize(cls, data: JsonDict) -> 'NoneType':
         assert data['.class'] == 'NoneType'
-        return NoneType()
+        refinements = RefinementInfo.deserialize(data['refinements']) \
+            if 'refinements' in data else None
+        return NoneType(refinements=refinements)
 
 
 # NoneType used to be called NoneTyp so to avoid needlessly breaking
@@ -961,7 +1123,7 @@ class DeletedType(ProperType):
 NOT_READY: Final = mypy.nodes.FakeInfo("De-serialization failure: TypeInfo not fixed")
 
 
-class Instance(ProperType):
+class Instance(BaseType):
     """An instance type of form C[T1, ..., Tn].
 
     The list of type variables may be empty.
@@ -996,8 +1158,9 @@ class Instance(ProperType):
 
     def __init__(self, typ: mypy.nodes.TypeInfo, args: Sequence[Type],
                  line: int = -1, column: int = -1, erased: bool = False,
-                 last_known_value: Optional['LiteralType'] = None) -> None:
-        super().__init__(line, column)
+                 last_known_value: Optional['LiteralType'] = None,
+                 refinements: Optional[RefinementInfo] = None) -> None:
+        super().__init__(line, column, refinements)
         self.type = typ
         self.args = tuple(args)
         self.type_ref: Optional[str] = None
@@ -1076,6 +1239,8 @@ class Instance(ProperType):
         }
         data["type_ref"] = type_ref
         data["args"] = [arg.serialize() for arg in self.args]
+        if self.refinements is not None:
+            data['refinements'] = self.refinements.serialize()
         if self.last_known_value is not None:
             data['last_known_value'] = self.last_known_value.serialize()
         return data
@@ -1094,6 +1259,8 @@ class Instance(ProperType):
             args = [deserialize_type(arg) for arg in args_list]
         inst = Instance(NOT_READY, args)
         inst.type_ref = data['type_ref']  # Will be fixed up by fixup.py later.
+        if 'refinements' in data:
+            inst.refinements = RefinementInfo.deserialize(data['refinements'])
         if 'last_known_value' in data:
             inst.last_known_value = LiteralType.deserialize(data['last_known_value'])
         return inst
@@ -1109,6 +1276,7 @@ class Instance(ProperType):
             self.column,
             erased if erased is not _dummy else self.erased,
             last_known_value if last_known_value is not _dummy else self.last_known_value,
+            self.refinements
         )
 
     def has_readable_member(self, name: str) -> bool:
@@ -1567,7 +1735,7 @@ class Overloaded(FunctionLike):
         return Overloaded([CallableType.deserialize(t) for t in data['items']])
 
 
-class TupleType(ProperType):
+class TupleType(BaseType):
     """The tuple type Tuple[T1, ..., Tn] (at least one type argument).
 
     Instance variables:
@@ -1587,11 +1755,12 @@ class TupleType(ProperType):
     implicit: bool
 
     def __init__(self, items: List[Type], fallback: Instance, line: int = -1,
-                 column: int = -1, implicit: bool = False) -> None:
+            column: int = -1, implicit: bool = False,
+            refinements: Optional[RefinementInfo] = None) -> None:
         self.partial_fallback = fallback
         self.items = items
         self.implicit = implicit
-        super().__init__(line, column)
+        super().__init__(line, column, refinements)
 
     def can_be_true_default(self) -> bool:
         if self.can_be_any_bool():
@@ -1629,18 +1798,24 @@ class TupleType(ProperType):
         return self.items == other.items and self.partial_fallback == other.partial_fallback
 
     def serialize(self) -> JsonDict:
-        return {'.class': 'TupleType',
+        data = {'.class': 'TupleType',
                 'items': [t.serialize() for t in self.items],
                 'partial_fallback': self.partial_fallback.serialize(),
                 'implicit': self.implicit,
                 }
+        if self.refinements is not None:
+            data['refinements'] = self.refinements.serialize()
+        return data
 
     @classmethod
     def deserialize(cls, data: JsonDict) -> 'TupleType':
         assert data['.class'] == 'TupleType'
+        refinements = RefinementInfo.deserialize(data['refinements']) \
+            if 'refinements' in data else None
         return TupleType([deserialize_type(t) for t in data['items']],
                          Instance.deserialize(data['partial_fallback']),
-                         implicit=data['implicit'])
+                         implicit=data['implicit'],
+                         refinements=refinements)
 
     def copy_modified(self, *, fallback: Optional[Instance] = None,
                       items: Optional[List[Type]] = None) -> 'TupleType':
@@ -1648,7 +1823,8 @@ class TupleType(ProperType):
             fallback = self.partial_fallback
         if items is None:
             items = self.items
-        return TupleType(items, fallback, self.line, self.column)
+        return TupleType(items, fallback, self.line, self.column,
+                refinements=self.refinements)
 
     def slice(self, begin: Optional[int], end: Optional[int],
               stride: Optional[int]) -> 'TupleType':
@@ -1834,6 +2010,9 @@ class RawExpressionType(ProperType):
         return self.base_type_name.replace("builtins.", "")
 
     def accept(self, visitor: 'TypeVisitor[T]') -> T:
+        if not isinstance(visitor, SyntheticTypeVisitor):
+            print("fail case", self, type(visitor))
+
         assert isinstance(visitor, SyntheticTypeVisitor)
         return visitor.visit_raw_expression_type(self)
 
@@ -2654,6 +2833,11 @@ deserialize_map: Final = {
     key: obj.deserialize
     for key, obj in names.items()
     if isinstance(obj, type) and issubclass(obj, Type) and obj is not Type
+}
+deserialize_refinement_expr_map: Final = {
+    key: obj.deserialize
+    for key, obj in names.items()
+    if isinstance(obj, type) and issubclass(obj, RefinementExpr) and obj is not RefinementExpr
 }
 
 

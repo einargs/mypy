@@ -654,12 +654,19 @@ class SemanticAnalyzer(NodeVisitor[None],
                 # class-level imported names and type variables are in scope.
                 analyzer = self.type_analyzer()
                 tag = self.track_incomplete_refs()
+                # I think it's the below that introduces the problem
                 result = analyzer.visit_callable_type(defn.type, nested=False)
                 # Don't store not ready types (including placeholders).
                 if self.found_incomplete_ref(tag) or has_placeholder(result):
                     self.defer(defn)
                     return
                 assert isinstance(result, ProperType)
+                # test log
+                #if (isinstance(result, CallableType)
+                #        and len(result.arg_types) > 0
+                #        and isinstance(result.arg_types[0], RefinementType)):
+                #    print("function def type", result)
+                #    print("callable", result.arg_types)
                 defn.type = result
                 self.add_type_alias_deps(analyzer.aliases_used)
                 self.check_function_signature(defn)

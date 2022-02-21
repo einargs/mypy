@@ -23,7 +23,7 @@ from mypy.types import (
     RawExpressionType, Instance, NoneType, TypeType,
     UnionType, TypeVarType, PartialType, DeletedType, UninhabitedType, TypeVarLikeType,
     UnboundType, ErasedType, StarType, EllipsisType, TypeList, CallableArgument,
-    PlaceholderType, TypeAliasType, ParamSpecType, get_proper_type
+    PlaceholderType, TypeAliasType, ParamSpecType, get_proper_type,
 )
 
 

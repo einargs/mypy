@@ -38,7 +38,9 @@ from mypy.patterns import (
 )
 from mypy.types import (
     Type, CallableType, AnyType, UnboundType, TupleType, TypeList, EllipsisType, CallableArgument,
-    TypeOfAny, Instance, RawExpressionType, ProperType, UnionType,
+    TypeOfAny, Instance, RawExpressionType, ProperType, UnionType, ConstraintSynType,
+    RefinementVar, RefinementLiteral, RefinementConstraint, RefinementTuple,
+    RefinementExpr,
 )
 from mypy import defaults
 from mypy import message_registry, errorcodes as codes
@@ -1385,6 +1387,53 @@ class ASTConverter:
         return self.set_line(node, n)
 
 
+def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
+    """Converts an ast node inside a refinement constraint into the correct
+    format.
+
+    In something like `V.shape == (A,B)`, this converts `V.shape` and `(A,B)`.
+    """
+    def convert_sub_expr(node: AST) -> Optional[RefinementExpr]:
+        if isinstance(node, ast3.Constant) and isinstance(node.value, int):
+            return RefinementLiteral(node.value)
+        elif isinstance(node, ast3.Attribute):
+            value = convert_sub_expr(node.value)
+            if isinstance(value, RefinementVar):
+                value.props.append(node.attr)
+                return value
+            else:
+                return None
+        elif isinstance(node, ast3.Name):
+            return RefinementVar(node.id)
+        else:
+            return None
+
+    if isinstance(node, ast3.Tuple):
+        return RefinementTuple([convert_sub_expr(e) for e in node.elts])
+    else:
+        return convert_sub_expr(node)
+
+
+class RefinementExprConverter:
+    @overload
+    def visit(self, node: ast3.expr) -> RefinementExpr: ...
+
+    @overload
+    def visit(self, node: Optional[AST]) -> Optional[RefinementExpr]: ...
+
+    def visit(self, node: Optional[AST]) -> Optional[RefinementExpr]:
+        """Modified visit -- keep track of the stack of nodes"""
+        if node is None:
+            return None
+        method = 'visit_' + node.__class__.__name__
+        visitor = getattr(self, method, None)
+        if visitor is not None:
+            return visitor(node)
+        else:
+            return None
+
+
+
 class TypeConverter:
     def __init__(self,
                  errors: Optional[Errors],
@@ -1550,6 +1599,14 @@ class TypeConverter:
                          column=self.convert_column(n.col_offset),
                          is_evaluated=self.is_evaluated,
                          uses_pep604_syntax=True)
+
+    def visit_Compare(self, n: ast3.Compare) -> Type:
+        if len(n.ops) == 1 and isinstance(n.ops[0], ast3.Eq):
+            assert len(n.comparators) == 1
+            left = convert_refinement_expr(n.left)
+            right = convert_refinement_expr(n.comparators[0])
+            return ConstraintSynType(RefinementConstraint(left, right))
+        return self.invalid_type(n)
 
     def visit_NameConstant(self, n: NameConstant) -> Type:
         if isinstance(n.value, bool):

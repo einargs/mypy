@@ -9,7 +9,7 @@ from typing import (
     Any, Dict, Set, List, cast, Tuple, TypeVar, Union, Optional, NamedTuple, Iterator,
     Iterable, Sequence, Mapping, Generic, AbstractSet, Callable, overload
 )
-from typing_extensions import Final, TypeAlias as _TypeAlias
+from typing_extensions import Final, TypeAlias as _TypeAlias, TypeGuard
 
 from mypy.backports import nullcontext
 from mypy.errors import Errors, report_internal_error
@@ -37,7 +37,7 @@ from mypy.types import (
     UnionType, TypeVarId, TypeVarType, PartialType, DeletedType, UninhabitedType,
     is_named_instance, union_items, TypeQuery, LiteralType,
     is_optional, remove_optional, TypeTranslator, StarType, get_proper_type, ProperType,
-    get_proper_types, is_literal_type, TypeAliasType, TypeGuardedType, ParamSpecType
+    get_proper_types, is_literal_type, TypeAliasType, TypeGuardedType, ParamSpecType,
 )
 from mypy.sametypes import is_same_type
 from mypy.messages import (
