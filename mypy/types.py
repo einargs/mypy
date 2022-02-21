@@ -6,7 +6,7 @@ from abc import abstractmethod
 
 from typing import (
     Any, TypeVar, Dict, List, Tuple, cast, Set, Optional, Union, Iterable, NamedTuple,
-    Sequence
+    Sequence, Literal
 )
 from typing_extensions import ClassVar, Final, TYPE_CHECKING, overload, TypeAlias as _TypeAlias
 
@@ -474,14 +474,26 @@ class RefinementConstraint:
     or properties that are integers of tuples of integers.
     """
 
-    __slots__ = ('left', 'right')
+    EQ: ClassVar = 0
+    NOT_EQ: ClassVar = 1
+    LT: ClassVar = 2
+    LT_EQ: ClassVar = 3
+    GT: ClassVar = 4
+    GT_EQ: ClassVar = 5
 
-    def __init__(self, left: RefinementExpr, right: RefinementExpr):
+    __slots__ = ('left', 'kind', 'right')
+
+    def __init__(self,
+            left: RefinementExpr,
+            kind: 'RefinementConstraintKind',
+            right: RefinementExpr):
         self.left = left
+        self.kind = kind
         self.right = right
 
     def serialize(self) -> JsonDict:
         return {'left': self.left.serialize(),
+                'kind': self.kind,
                 'right': self.right.serialize(),
                 }
 
@@ -489,7 +501,18 @@ class RefinementConstraint:
     def deserialize(cls, data: JsonDict) -> 'RefinementConstraint':
         return ConstraintType(
                 deserialize_refinement_expr(data['left']),
+                data['kind'],
                 deserialize_refinement_expr(data['right']))
+
+
+RefinementConstraintKind = Literal[
+    RefinementConstraint.EQ,
+    RefinementConstraint.NOT_EQ,
+    RefinementConstraint.LT,
+    RefinementConstraint.LT_EQ,
+    RefinementConstraint.GT,
+    RefinementConstraint.GT_EQ,
+    ]
 
 
 class RefinementInfo:
@@ -2442,6 +2465,45 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
         self.id_mapper = id_mapper
         self.any_as_dots = False
 
+    def with_refinement(self, base_str: str, base: BaseType) -> str:
+        if base.refinements is None:
+            return base_str
+
+        def expr_str(e: RefinementExpr) -> str:
+            if isinstance(e, RefinementTuple):
+                return "({})".format(", ".join(expr_str(e) for e in e.items))
+            elif isinstance(e, RefinementVar):
+                return ".".join([e.name] + e.props)
+            elif isinstance(e, RefinementLiteral):
+                return str(e.value)
+
+        def constraint_str(c: RefinementConstraint) -> str:
+            left = expr_str(c.left)
+            right = expr_str(c.right)
+            if c.kind == RefinementConstraint.EQ:
+                kind = "=="
+            if c.kind == RefinementConstraint.NOT_EQ:
+                kind = "!="
+            if c.kind == RefinementConstraint.LT:
+                kind = "<"
+            if c.kind == RefinementConstraint.LT_EQ:
+                kind = "<="
+            if c.kind == RefinementConstraint.GT:
+                kind = ">"
+            if c.kind == RefinementConstraint.GT_EQ:
+                kind = ">="
+            return "{} {} {}".format(left, kind, right)
+
+        var_str = expr_str(base.refinements.var)
+
+        if len(base.refinements.constraints) > 0:
+            constraints_str = ", ".join(constraint_str(c)
+                for c in base.refinements.constraints)
+
+            return "{}{{{}: {}}}".format(base_str, var_str, constraints_str)
+        else:
+            return "{}{{{}:}}".format(base_str, var_str)
+
     def visit_unbound_type(self, t: UnboundType) -> str:
         s = t.name + '?'
         if t.args:
@@ -2464,7 +2526,7 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
         return 'Any'
 
     def visit_none_type(self, t: NoneType) -> str:
-        return "None"
+        return self.with_refinement("None", t)
 
     def visit_uninhabited_type(self, t: UninhabitedType) -> str:
         return "<nothing>"
@@ -2496,7 +2558,7 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
                 s += '[{}]'.format(self.list_str(t.args))
         if self.id_mapper:
             s += '<{}>'.format(self.id_mapper.id(t.type))
-        return s
+        return self.with_refinement(s, t)
 
     def visit_type_var(self, t: TypeVarType) -> str:
         if t.name is None:
@@ -2589,7 +2651,7 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
             fallback_name = t.partial_fallback.type.fullname
             if fallback_name != 'builtins.tuple':
                 return 'Tuple[{}, fallback={}]'.format(s, t.partial_fallback.accept(self))
-        return 'Tuple[{}]'.format(s)
+        return self.with_refinement('Tuple[{}]'.format(s), t)
 
     def visit_typeddict_type(self, t: TypedDictType) -> str:
         def item_str(name: str, typ: str) -> str:
