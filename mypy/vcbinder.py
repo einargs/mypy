@@ -39,6 +39,9 @@ class VerificationVar:
     def __repr__(self) -> str: pass
 
     @abstractmethod
+    def fullpath(self) -> str: pass
+
+    @abstractmethod
     def extend(self, props: list[VarProp]) -> 'VerificationVar':
         """Extends the variable with a list of properties.
         """
@@ -56,7 +59,9 @@ class RealVar(VerificationVar):
     def __init__(
             self,
             name: str,
-            props: list[VarProp] = []) -> None:
+            props: Optional[list[VarProp]] = None) -> None:
+        if props is None:
+            props = []
         self.name = name
         self.props = props
 
@@ -76,19 +81,22 @@ class RealVar(VerificationVar):
             return NotImplemented
         return self.name == other.name and self.props == other.props
 
+    def fullpath(self) -> str:
+        return prop_list_str(self.name, self.props)
+
     def __hash__(self) -> int:
-        fullname = prop_list_str(self.name, self.props)
-        return hash(("real_var", fullname))
+        return hash(("real_var", self.fullpath()))
 
     def __repr__(self) -> str:
-        fullname = prop_list_str(self.name, self.props)
-        return "var({})".format(fullname)
+        return "var({})".format(self.fullpath())
 
 
 class FreshVar(VerificationVar):
     """A type of verification var that can be introduced as fresh in a context.
     """
-    def __init__(self, id: int, props: list[VarProp] = []):
+    def __init__(self, id: int, props: Optional[list[VarProp]] = None):
+        if props is None:
+            props = []
         self.id = id
         self.props = props
 
@@ -108,22 +116,28 @@ class FreshVar(VerificationVar):
             return NotImplemented
         return self.id == other.id and self.props == other.props
 
+    def fullpath(self) -> str:
+        return prop_list_str(str(self.id), self.props)
+
     def __hash__(self) -> int:
-        fullname = prop_list_str(str(self.id), self.props)
-        return hash(("fresh_var", fullname))
+        return hash(("fresh_var", self.fullpath()))
 
     def __repr__(self) -> str:
-        fullname = prop_list_str(str(self.id), self.props)
-        return f"var_id({fullname})"
+        return f"var_id({self.fullpath()})"
 
 
-def to_real_var(e: Expression, props=[]) -> Optional[RealVar]:
+def to_real_var(e: Expression, props: Optional[list[VarProp]] = None) -> Optional[RealVar]:
+    if props is None:
+        props = []
     if isinstance(e, NameExpr):
         props.reverse()
         return RealVar(e.name, props=props)
     elif isinstance(e, MemberExpr):
         props.append(e.name)
         return to_real_var(e.expr, props)
+    elif isinstance(e, IndexExpr) and isinstance(e.index, IntExpr):
+        props.append(e.index.value)
+        return to_real_var(e.base, props)
     else:
         return None
 
@@ -164,22 +178,23 @@ class VerificationBinder:
         self.next_id += 1
         return FreshVar(self.next_id)
 
-    def fresh_smt_var(self) -> SMTVar:
+    def fresh_smt_var(self, var: VerificationVar) -> SMTVar:
         self.next_id += 1
-        return z3.Int(f"int-{self.next_id}", ctx=self.smt_context)
+        name = var.fullpath()
+        return z3.Int(f"{name}#{self.next_id}", ctx=self.smt_context)
 
     def get_smt_var(self, var: VerificationVar) -> SMTVar:
         if var in self.var_versions:
             return self.var_versions[var]
         else:
-            fresh_var = self.fresh_smt_var()
+            fresh_var = self.fresh_smt_var(var)
             self.var_versions[var] = fresh_var
             return fresh_var
 
     def invalidate_var(self, var: VerificationVar) -> None:
         for dep in self.dependencies[var]:
             self.invalidate_var(dep)
-        fresh_var = self.fresh_smt_var()
+        fresh_var = self.fresh_smt_var(var)
         self.var_versions[var] = fresh_var
 
     def add_bound_var(self, term_var: str, ref_var: str, context: Context) -> None:
@@ -191,7 +206,9 @@ class VerificationBinder:
         return
 
     def translate_expr(self, expr: RefinementExpr,
-            *, ext_props: list[VarProp] = []) -> SMTExpr:
+            *, ext_props: Optional[list[VarProp]] = None) -> SMTExpr:
+        if ext_props is None:
+            ext_props = []
         if isinstance(expr, RefinementLiteral):
             return expr.value
         elif isinstance(expr, RefinementVar):
@@ -289,7 +306,6 @@ class VerificationBinder:
     def add_var(self, var_name: str, typ: Type) -> None:
         if not isinstance(typ, BaseType) or typ.refinements is None:
             return
-        print("works")
         info = typ.refinements
 
         if info.var is not None:
@@ -321,8 +337,8 @@ class VerificationBinder:
         Returns false if the implication is not satisfiable.
         """
         variables = list(self.var_versions.values())
-        print("smt variables", variables)
-        print("constraints", self.constraints, constraints)
+        print("Given:", self.constraints)
+        print("Goal:", constraints)
         cond = z3.ForAll(variables,
                 z3.Implies(z3.And(self.constraints), z3.And(constraints)))
         return self.smt_solver.check(cond) == z3.sat
@@ -370,8 +386,6 @@ class VerificationBinder:
                 constraints = [smt_c
                         for c in info.constraints
                         for smt_c in self.translate_to_constraints(c, ctx=ctx)]
-                print("var_versions", self.var_versions)
-                print("constraints", self.constraints)
                 if not self.check_implication(constraints):
                     self.fail(FAIL_MSG, target)
                 return

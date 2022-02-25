@@ -453,7 +453,9 @@ class RefinementVar(RefinementExpr):
 
     __slots__ = ('name', 'props')
 
-    def __init__(self, name: str, props: list[str] = []):
+    def __init__(self, name: str, props: Optional[list[str]] = None):
+        if props is None:
+            props = []
         self.name = name
         self.props = props
 

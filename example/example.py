@@ -37,6 +37,11 @@ def test_tuple(
     return m2
 
 
+def test_tuple_member(v: Annotated[array, V, V.shape == (1, 5)]
+        ) -> Annotated[int, A, A > 2]:
+    return v.shape[1]
+
+
 def minimal(m: Annotated[Container, A, A.value > 2]) -> Annotated[int, B, B > 1]:
     return m.value
 

@@ -34,9 +34,9 @@ Entering a new function scope should put vc conditons on a stack (probably using
 `@contextmanager`).
 
 # TODO
-- get the term level correspondence to tuple stuff working
 - enable assignment to variables
 - enable calling functions with refinement types
+- get destructuring a tuple working
 - make sure that return values of refined functions that are assigned to
   variables have refined types inferred.
 - add predicate/control flow based refinement
