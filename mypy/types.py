@@ -482,10 +482,10 @@ class RefinementConstraint:
 
     EQ: ClassVar = 0  # ==
     NOT_EQ: ClassVar = 1  # !=
-    LT: ClassVar = 2  # >
-    LT_EQ: ClassVar = 3  # >=
-    GT: ClassVar = 4  # <
-    GT_EQ: ClassVar = 5  # <=
+    LT: ClassVar = 2  # <
+    LT_EQ: ClassVar = 3  # <=
+    GT: ClassVar = 4  # >
+    GT_EQ: ClassVar = 5  # >=
 
     __slots__ = ('left', 'kind', 'right')
 
@@ -2491,13 +2491,13 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
             if c.kind == RefinementConstraint.NOT_EQ:
                 kind = "!="
             if c.kind == RefinementConstraint.LT:
-                kind = ">"
-            if c.kind == RefinementConstraint.LT_EQ:
-                kind = ">="
-            if c.kind == RefinementConstraint.GT:
                 kind = "<"
-            if c.kind == RefinementConstraint.GT_EQ:
+            if c.kind == RefinementConstraint.LT_EQ:
                 kind = "<="
+            if c.kind == RefinementConstraint.GT:
+                kind = ">"
+            if c.kind == RefinementConstraint.GT_EQ:
+                kind = ">="
             return "{} {} {}".format(left, kind, right)
 
         constraints_str = ", ".join(constraint_str(c)

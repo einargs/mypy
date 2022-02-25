@@ -3430,8 +3430,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
             if isinstance(return_type, BaseType):
                 # If the refinement type check fails
-                if not self.vc_binder.check_subsumption(s.expr, return_type):
-                    self.fail("Refinement type check failed", s)
+                self.vc_binder.check_subsumption(s.expr, return_type)
 
             if s.expr:
                 is_lambda = isinstance(self.scope.top_function(), LambdaExpr)

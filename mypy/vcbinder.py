@@ -48,7 +48,6 @@ class VerificationVar:
     def __hash__(self) -> int:
         fullname = ".".join([self.name] + self.props)
         h = hash(fullname)
-        print("verification var hash", h, "for", fullname)
         return h
 
     def subvars(self) -> 'list[VerificationVar]':
@@ -102,6 +101,11 @@ class VCConstraint:
         self.right = right
 
 
+SMTVar: TypeAlias = z3.ArithRef
+SMTExpr: TypeAlias = Union[SMTVar, int]
+SMTConstraint: TypeAlias = z3.BoolRef
+
+
 class VerificationBinder:
     """Deals with generation verification conditions.
     """
@@ -111,38 +115,41 @@ class VerificationBinder:
 
         self.next_id = 0
 
-        # Maps ids to relevant constraints
-        self.constraints: Dict[int, Set[VCConstraint]] = {}
-
+        # Smt stuff
         self.smt_context: z3.Context = z3.Context()
         self.smt_solver: z3.Solver = z3.Solver(ctx=self.smt_context)
 
-        self.smt_vars: Dict[int, z3.Int] = {}
+        # This will contain all of the constraints on smt variables.
+        self.constraints: list[SMTConstraint] = []
 
-        # Maps variable names to the ids
-        self.var_versions: Dict[VerificationVar, int] = {}
+        # Maps variable names to the smt variables
+        self.var_versions: Dict[VerificationVar, SMTVar] = {}
 
-        # Maps variable names to the variable names containing them
+        # Maps variable names to the variable names containing them.
+        # Used to track what variables to invalidate if another variable is
+        # invalidated.
         self.dependencies: Dict[VerificationVar, Set[VerificationVar]] = {}
 
         # Maps bound refinement variable names to term variables base names.
         self.bound_var_to_name: Dict[str, str] = {}
 
-    def _get_id(self) -> int:
+    def fresh_smt_var(self) -> SMTVar:
         self.next_id += 1
-        return self.next_id
+        return z3.Int(f"int-{self.next_id}", ctx=self.smt_context)
+
+    def get_smt_var(self, var: VerificationVar) -> SMTVar:
+        if var in self.var_versions:
+            return self.var_versions[var]
+        else:
+            fresh_var = self.fresh_smt_var()
+            self.var_versions[var] = fresh_var
+            return fresh_var
 
     def invalidate_var(self, var: VerificationVar) -> None:
         for dep in self.dependencies[var]:
             self.invalidate_var(dep)
-        self.var_versions[var] = self._get_id()
-
-    def get_smt_var(self, id: int) -> z3.Int:
-        return self.smt_vars.setdefault(id, z3.Int(f"int-{id}",
-            ctx=self.smt_context))
-
-    def meta_var(self, name: str) -> VerificationVar:
-        return VerificationVar(name)
+        fresh_var = self.fresh_smt_var()
+        self.var_versions[var] = fresh_var
 
     def add_bound_var(self, term_var: str, ref_var: str, context: Context) -> None:
         if ref_var in self.bound_var_to_name:
@@ -152,28 +159,22 @@ class VerificationBinder:
         self.bound_var_to_name[ref_var] = term_var
         return
 
-    def translate_expr(self, expr: RefinementExpr) -> VCExpr:
+    def translate_expr(self, expr: RefinementExpr) -> SMTExpr:
         if isinstance(expr, RefinementLiteral):
-            return VCLiteral(expr.value)
+            return expr.value
         elif isinstance(expr, RefinementTuple):
-            print("Have not yet implemented tuple handling")
-            assert False
+            assert False, "Have not yet implemented tuple handling"
         elif isinstance(expr, RefinementVar):
+            # Resolve anything where we have a term variable m, but we use the
+            # refinement variable R to refer to it in constraints.
             base_name = self.bound_var_to_name.get(expr.name, expr.name)
-            print("expr.name", expr.name, "base_name", base_name)
             var = VerificationVar(base_name, expr.props)
             for sv in var.subvars():
                 self.dependencies.setdefault(sv, set()).add(var)
 
-            if var in self.var_versions:
-                id = self.var_versions[var]
-            else:
-                id = self._get_id()
-                self.var_versions[var] = id
-
-            return VCVar(id)
+            return self.get_smt_var(var)
         else:
-            assert False
+            assert False, "should be impossible"
 
     @contextmanager
     def var_binding(self, ref_var: str, term_var: str) -> Iterator[None]:
@@ -190,61 +191,29 @@ class VerificationBinder:
             yield None
             del self.bound_var_to_name[ref_var]
 
-    def translate_constraint(self, con: RefinementConstraint) -> VCConstraint:
-        kind = con.kind
+    def translate_constraint(self,
+            con: RefinementConstraint,
+            *,
+            ctx: Context) -> SMTConstraint:
         left = self.translate_expr(con.left)
         right = self.translate_expr(con.right)
-        return VCConstraint(left, kind, right)
 
-    def add_constraint_to_smt(self, con: VCConstraint) -> None:
-        """This adds the constraint to the smt solver.
-
-        This is separate from just adding the constraint, because this can
-        be done just for checking a type.
-        """
-        def to_smt_expr(e: VCExpr) -> Union[int, z3.Int]:
-            if isinstance(e, VCVar):
-                return self.get_smt_var(e.id)
-            elif isinstance(e, VCLiteral):
-                return e.value
-            else:
-                raise RuntimeError("Tuples not yet supported")
-
-        right = to_smt_expr(con.right)
-        left = to_smt_expr(con.left)
-
-        print("smt sides", right, left)
+        if not isinstance(left, z3.ArithRef) and not isinstance(right, z3.ArithRef):
+            self.fail("A refinement constraint must include at least one "
+                    "refinement variable", ctx)
 
         if con.kind == RefinementConstraint.EQ:
-            self.smt_solver.add(right == left)
+            return left == right
         elif con.kind == RefinementConstraint.NOT_EQ:
-            self.smt_solver.add(right != left)
+            return left != right
         elif con.kind == RefinementConstraint.LT:
-            self.smt_solver.add(right > left)
+            return left < right
         elif con.kind == RefinementConstraint.LT_EQ:
-            self.smt_solver.add(right >= left)
+            return left <= right
         elif con.kind == RefinementConstraint.GT:
-            self.smt_solver.add(right < left)
+            return left > right
         elif con.kind == RefinementConstraint.GT_EQ:
-            self.smt_solver.add(right <= left)
-
-    def add_constraint(self, con: VCConstraint) -> None:
-        # Index the vc constraint
-        # TODO: may not be needed if the smt solver works the way I think
-        # it does
-        def add_con(e: VCExpr) -> None:
-            """Adds the constraint to the index of constraints related to
-            this expression if it is a VCExpr.
-            """
-            # TODO: does not currently handle VCTuples.
-            if not isinstance(e, VCVar):
-                return
-            self.constraints.setdefault(e.id, set()).add(con)
-        add_con(con.right)
-        add_con(con.left)
-
-        # Here we actually add this to the smt solver
-        self.add_constraint_to_smt(con)
+            return left >= right
 
     def add_var(self, var_name: str, typ: Type) -> None:
         if not isinstance(typ, BaseType) or typ.refinements is None:
@@ -256,16 +225,25 @@ class VerificationBinder:
             self.add_bound_var(var_name, info.var.name, typ)
 
         for c in info.constraints:
-            con = self.translate_constraint(c)
-            if not isinstance(con.left, VCVar) and not isinstance(con.right, VCVar):
-                self.fail("A refinement constraint must include at least one "
-                        "refinement variable", typ)
-            self.add_constraint(con)
+            con = self.translate_constraint(c, ctx=typ)
+            self.constraints.append(con)
 
     def fail(self, msg: str, context: Context) -> None:
         self.msg.fail(msg, context)
 
-    def check_subsumption(self, expr: Optional[Expression], target: BaseType) -> bool:
+    def check_implication(self, constraints: list[SMTConstraint]) -> bool:
+        """Checks if the given constraints are implied by already known
+        constraints.
+
+        Returns false if the implication is not satisfiable.
+        """
+        variables = list(self.var_versions.values())
+        print("smt variables", variables)
+        cond = z3.ForAll(variables,
+                z3.Implies(z3.And(self.constraints), z3.And(constraints)))
+        return self.smt_solver.check(cond) == z3.sat
+
+    def check_subsumption(self, expr: Optional[Expression], target: BaseType) -> None:
         """This is the meat of the refinement type checking.
 
         Here we check whether an expression's type subsumes the type it needs
@@ -275,52 +253,35 @@ class VerificationBinder:
         We check this by generating a vc constraint that says, for all x given
         the associated `VCConstraint`s, do the `VCConstraint`s of the new type
         hold?
-
-        We return false if the _actual refinement check_ is wrong.
         """
         info = target.refinements
         if info is None:
-            return True
+            return
 
-        if expr is None:
-            self.smt_solver.push()
-            for con in info.constraints:
-                self.add_constraint_to_smt(self.translate_constraint(con))
-            result = self.smt_solver.check()
-            self.smt_solver.pop()
-            return result == z3.sat
+        FAIL_MSG = "refinement type check failed"
 
-        var = to_verification_var(expr)
-        if var is None:
-            return True
+        if expr is None or info.var is None:
+            # This only applies to return statement checking. This case should
+            # be prevented by checks to ensure we aren't giving a None type
+            # a refinement variable.
+            assert expr is not None or info.var is not None
 
-        # We generate the substitution parameters if they exist.
-        implied_constraints: list[VCConstraint]
-        if info.var is None:
-            constraints = [self.translate_constraint(c) for c in info.constraints]
+            constraints = [self.translate_constraint(c, ctx=target)
+                    for c in info.constraints]
+            if not self.check_implication(constraints):
+                self.fail(FAIL_MSG, target)
+            return
         else:
+            var = to_verification_var(expr)
+            if var is None:
+                self.fail("could not type check expression against "
+                    "refinement type", target)
+                return
             with self.var_binding(info.var.name, var.name):
-                print("binding temp var", self.bound_var_to_name)
-                print("smt_vars", self.smt_vars)
-                print("var_versions", self.var_versions)
-                constraints = [self.translate_constraint(c)
+                constraints = [self.translate_constraint(c, ctx=target)
                         for c in info.constraints]
-                print("2 binding temp var", self.bound_var_to_name)
-                print("2 smt_vars", self.smt_vars)
-                print("2 var_versions", self.var_versions)
-
-        # Here we set a breakpoint that we'll jump back to after we've checked
-        # things.
-        self.smt_solver.push()
-
-        for c in constraints:
-            self.add_constraint_to_smt(c)
-
-        result = self.smt_solver.check()
-
-        print("smt solver", self.smt_solver)
-        print("smt result", result)
-
-        self.smt_solver.pop()
-
-        return result == z3.sat
+                print("var_versions", self.var_versions)
+                print("constraints", self.constraints)
+                if not self.check_implication(constraints):
+                    self.fail(FAIL_MSG, target)
+                return
