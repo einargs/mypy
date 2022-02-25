@@ -1,5 +1,8 @@
+from abc import ABCMeta, abstractmethod
 from contextlib import contextmanager
-from typing import Dict, List, Set, Iterator, Union, Optional, Tuple, cast, Any
+from typing import (
+    Dict, List, Set, Iterator, Union, Optional, Tuple, cast, Any,
+)
 from typing_extensions import TypeAlias
 
 from mypy.types import (
@@ -9,7 +12,7 @@ from mypy.types import (
 )
 from mypy.nodes import (
     Expression, Var, RefExpr, IndexExpr, MemberExpr, AssignmentExpr, NameExpr,
-    Context,
+    Context, IntExpr,
 )
 from mypy.literals import Key, literal, literal_hash, subkeys
 from mypy.messages import MessageBuilder
@@ -27,12 +30,31 @@ def vc_access(e: Expression) -> bool:
 
 class VerificationVar:
     """Indicates the state of refinement variables.
-
-    All of them are uniquely identified by their ids. The `meta` property
-    indicates whether they are a meta variable or bound to specific term
-    variable.
     """
 
+    @abstractmethod
+    def __eq__(self, other: Any) -> bool: pass
+
+    @abstractmethod
+    def __hash__(self) -> int: pass
+
+    @abstractmethod
+    def subvars(self) -> 'list[VerificationVar]': pass
+
+    @abstractmethod
+    def __repr__(self) -> str: pass
+
+    @abstractmethod
+    def extend(self, props: list[str]) -> 'VerificationVar':
+        """Extends the variable with a list of properties.
+        """
+        pass
+
+
+class RealVar(VerificationVar):
+    """A real var is present in the actual source, either as a term variable or
+    a refinement variable.
+    """
     def __init__(
             self,
             name: str,
@@ -40,36 +62,63 @@ class VerificationVar:
         self.name = name
         self.props = props
 
+    def subvars(self) -> 'list[VerificationVar]':
+        vars = [RealVar(self.name)]
+        props = []
+        for p in self.props[:-1]:
+            props.append(p)
+            vars.append(RealVar(self.name, props.copy()))
+        return vars
+
+    def extend(self, props: list[str]) -> 'VerificationVar':
+        return RealVar(self.name, self.props + props)
+
     def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, VerificationVar):
+        if not isinstance(other, RealVar):
             return NotImplemented
         return self.name == other.name and self.props == other.props
 
     def __hash__(self) -> int:
         fullname = ".".join([self.name] + self.props)
-        h = hash(fullname)
-        return h
-
-    def subvars(self) -> 'list[VerificationVar]':
-        vars = [VerificationVar(self.name)]
-        props = []
-        for p in self.props[:-1]:
-            props.append(p)
-            vars.append(VerificationVar(self.name, props.copy()))
-        return vars
+        return hash(("real_var", fullname))
 
     def __repr__(self) -> str:
         fullname = ".".join([self.name] + self.props)
         return "var({})".format(fullname)
 
 
-def to_verification_var(e: Expression, props=[]) -> Optional[VerificationVar]:
+class FreshVar(VerificationVar):
+    """A type of verification var that can be introduced as fresh in a context.
+    """
+    def __init__(self, id: int, props: list[str] = []):
+        self.id = id
+        self.props = props
+
+    def subvars(self) -> 'list[VerificationVar]':
+        return []
+
+    def extend(self, props: list[str]) -> 'VerificationVar':
+        return FreshVar(self.id, self.props + props)
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, FreshVar):
+            return NotImplemented
+        return self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(("fresh_var", self.id))
+
+    def __repr__(self) -> str:
+        return f"var(id={self.id})"
+
+
+def to_real_var(e: Expression, props=[]) -> Optional[RealVar]:
     if isinstance(e, NameExpr):
         props.reverse()
-        return VerificationVar(e.name, props=props)
+        return RealVar(e.name, props=props)
     elif isinstance(e, MemberExpr):
         props.append(e.name)
-        return to_verification_var(e.expr, props)
+        return to_real_var(e.expr, props)
     else:
         return None
 
@@ -133,6 +182,10 @@ class VerificationBinder:
         # Maps bound refinement variable names to term variables.
         self.bound_var_to_name: Dict[str, VerificationVar] = {}
 
+    def fresh_verification_var(self) -> VerificationVar:
+        self.next_id += 1
+        return FreshVar(self.next_id)
+
     def fresh_smt_var(self) -> SMTVar:
         self.next_id += 1
         return z3.Int(f"int-{self.next_id}", ctx=self.smt_context)
@@ -156,7 +209,7 @@ class VerificationBinder:
             self.fail("Tried to bind already bound refinement variable", context)
             return
 
-        self.bound_var_to_name[ref_var] = VerificationVar(term_var)
+        self.bound_var_to_name[ref_var] = RealVar(term_var)
         return
 
     def translate_expr(self, expr: RefinementExpr) -> SMTExpr:
@@ -167,13 +220,9 @@ class VerificationBinder:
         elif isinstance(expr, RefinementVar):
             # Resolve anything where we have a term variable m, but we use the
             # refinement variable R to refer to it in constraints.
-            print("expr.name", expr.name, "expr", expr)
-            default_var = VerificationVar(expr.name)
-            print("default_var", default_var)
+            default_var = RealVar(expr.name)
             base = self.bound_var_to_name.get(expr.name, default_var)
-            print("base var", base)
-            var = VerificationVar(base.name, base.props + expr.props)
-            print("full var", var)
+            var = base.extend(expr.props)
             for sv in var.subvars():
                 self.dependencies.setdefault(sv, set()).add(var)
 
@@ -236,6 +285,15 @@ class VerificationBinder:
     def fail(self, msg: str, context: Context) -> None:
         self.msg.fail(msg, context)
 
+    def var_from_expr(self, expr: Expression) -> Optional[VerificationVar]:
+        if isinstance(expr, IntExpr):
+            fresh_var = self.fresh_verification_var()
+            smt_var = self.get_smt_var(fresh_var)
+            self.constraints.append(smt_var == expr.value)
+            return fresh_var
+        else:
+            return to_real_var(expr)
+
     def check_implication(self, constraints: list[SMTConstraint]) -> bool:
         """Checks if the given constraints are implied by already known
         constraints.
@@ -248,7 +306,10 @@ class VerificationBinder:
                 z3.Implies(z3.And(self.constraints), z3.And(constraints)))
         return self.smt_solver.check(cond) == z3.sat
 
-    def check_subsumption(self, expr: Optional[Expression], target: BaseType) -> None:
+    def check_subsumption(self,
+            expr: Optional[Expression],
+            target: BaseType,
+            ctx: Context) -> None:
         """This is the meat of the refinement type checking.
 
         Here we check whether an expression's type subsumes the type it needs
@@ -272,19 +333,19 @@ class VerificationBinder:
             # TODO: implement those checks.
             assert expr is not None or info.var is not None
 
-            constraints = [self.translate_constraint(c, ctx=target)
+            constraints = [self.translate_constraint(c, ctx=ctx)
                     for c in info.constraints]
             if not self.check_implication(constraints):
                 self.fail(FAIL_MSG, target)
             return
         else:
-            var = to_verification_var(expr)
+            var = self.var_from_expr(expr)
             if var is None:
                 self.fail("could not type check expression against "
                     "refinement type", target)
                 return
             with self.var_binding(info.var.name, var):
-                constraints = [self.translate_constraint(c, ctx=target)
+                constraints = [self.translate_constraint(c, ctx=ctx)
                         for c in info.constraints]
                 print("var_versions", self.var_versions)
                 print("constraints", self.constraints)

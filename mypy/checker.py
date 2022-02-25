@@ -3430,7 +3430,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
             if isinstance(return_type, BaseType):
                 # If the refinement type check fails
-                self.vc_binder.check_subsumption(s.expr, return_type)
+                self.vc_binder.check_subsumption(s.expr, return_type, s)
 
             if s.expr:
                 is_lambda = isinstance(self.scope.top_function(), LambdaExpr)
@@ -3447,6 +3447,9 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 # Return with a value.
                 typ = get_proper_type(self.expr_checker.accept(
                     s.expr, return_type, allow_none_return=allow_none_func_call))
+
+                if isinstance(return_type, BaseType) and return_type.refinements is not None:
+                    print("typ", typ)
 
                 if defn.is_async_generator:
                     self.fail(message_registry.RETURN_IN_ASYNC_GENERATOR, s)

@@ -43,6 +43,9 @@ Entering a new function scope should put vc conditons on a stack (probably using
   generally this is about actually type checking the constraints on refinement
   variables. Technically not really necessary, but probably a nice to have.
 - get it to understand integer operations
+- inference of refinement types esp. for literals. This means taking `a = 1` and
+  figuring out that the inferred type of `a` should be
+  `Annotated[int, A, A == 1]`.
 
 # Fun syntax
 I could take advantage of the recongition of slice syntax to do:

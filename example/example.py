@@ -1,4 +1,4 @@
-from typing import TypeVar, Generic, Annotated
+from typing import TypeVar, Generic, Annotated, Literal
 from refinement import RefinementVar
 # import torch
 
@@ -24,6 +24,10 @@ C = RefinementVar('C')
 class Container:
     def __init__(self, value: int):
         self.value = value
+
+
+def test_literal() -> Annotated[int, A, A > 1]:
+    return 2
 
 
 def minimal(m: Annotated[Container, A, A.value > 2]) -> Annotated[int, B, B > 1]:
