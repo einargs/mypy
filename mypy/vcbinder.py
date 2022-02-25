@@ -130,8 +130,8 @@ class VerificationBinder:
         # invalidated.
         self.dependencies: Dict[VerificationVar, Set[VerificationVar]] = {}
 
-        # Maps bound refinement variable names to term variables base names.
-        self.bound_var_to_name: Dict[str, str] = {}
+        # Maps bound refinement variable names to term variables.
+        self.bound_var_to_name: Dict[str, VerificationVar] = {}
 
     def fresh_smt_var(self) -> SMTVar:
         self.next_id += 1
@@ -156,7 +156,7 @@ class VerificationBinder:
             self.fail("Tried to bind already bound refinement variable", context)
             return
 
-        self.bound_var_to_name[ref_var] = term_var
+        self.bound_var_to_name[ref_var] = VerificationVar(term_var)
         return
 
     def translate_expr(self, expr: RefinementExpr) -> SMTExpr:
@@ -167,8 +167,13 @@ class VerificationBinder:
         elif isinstance(expr, RefinementVar):
             # Resolve anything where we have a term variable m, but we use the
             # refinement variable R to refer to it in constraints.
-            base_name = self.bound_var_to_name.get(expr.name, expr.name)
-            var = VerificationVar(base_name, expr.props)
+            print("expr.name", expr.name, "expr", expr)
+            default_var = VerificationVar(expr.name)
+            print("default_var", default_var)
+            base = self.bound_var_to_name.get(expr.name, default_var)
+            print("base var", base)
+            var = VerificationVar(base.name, base.props + expr.props)
+            print("full var", var)
             for sv in var.subvars():
                 self.dependencies.setdefault(sv, set()).add(var)
 
@@ -177,7 +182,7 @@ class VerificationBinder:
             assert False, "should be impossible"
 
     @contextmanager
-    def var_binding(self, ref_var: str, term_var: str) -> Iterator[None]:
+    def var_binding(self, ref_var: str, term_var: VerificationVar) -> Iterator[None]:
         """Temporary binds a refinement variable to a given base term
         variable.
         """
@@ -264,6 +269,7 @@ class VerificationBinder:
             # This only applies to return statement checking. This case should
             # be prevented by checks to ensure we aren't giving a None type
             # a refinement variable.
+            # TODO: implement those checks.
             assert expr is not None or info.var is not None
 
             constraints = [self.translate_constraint(c, ctx=target)
@@ -277,7 +283,7 @@ class VerificationBinder:
                 self.fail("could not type check expression against "
                     "refinement type", target)
                 return
-            with self.var_binding(info.var.name, var.name):
+            with self.var_binding(info.var.name, var):
                 constraints = [self.translate_constraint(c, ctx=target)
                         for c in info.constraints]
                 print("var_versions", self.var_versions)

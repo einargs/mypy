@@ -1399,8 +1399,8 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
         elif isinstance(node, ast3.Attribute):
             value = convert_sub_expr(node.value)
             if isinstance(value, RefinementVar):
-                value.props.append(node.attr)
-                return value
+                new_value = RefinementVar(value.name, value.props + [node.attr])
+                return new_value
             else:
                 return None
         elif isinstance(node, ast3.Name):

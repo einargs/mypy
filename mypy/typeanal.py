@@ -402,6 +402,9 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                             "refinement variable.", c)
                     return AnyType(TypeOfAny.from_error)
 
+            print("local_var", local_var)
+            print("constraints", constraints[0].left)
+
             root.refinements = RefinementInfo(local_var, constraints)
 
             print("root", root)

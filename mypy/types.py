@@ -474,6 +474,9 @@ class RefinementVar(RefinementExpr):
         assert data['.class'] == 'RefinementVar'
         return RefinementVar(data['name'], data['props'])
 
+    def __repr__(self) -> str:
+        return ".".join([self.name] + self.props)
+
 
 class RefinementConstraint:
     """A constraint on a base type. Can constraint integers, tuples of integers,
@@ -505,7 +508,7 @@ class RefinementConstraint:
 
     @classmethod
     def deserialize(cls, data: JsonDict) -> 'RefinementConstraint':
-        return ConstraintType(
+        return RefinementConstraint(
                 deserialize_refinement_expr(data['left']),
                 data['kind'],
                 deserialize_refinement_expr(data['right']))
