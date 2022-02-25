@@ -8,7 +8,8 @@ from mypy.nodes import (
     ConditionalExpr, EllipsisExpr, YieldFromExpr, YieldExpr, RevealExpr, SuperExpr,
     TypeApplication, LambdaExpr, ListComprehension, SetComprehension, DictionaryComprehension,
     GeneratorExpr, BackquoteExpr, TypeVarExpr, TypeAliasExpr, NamedTupleExpr, EnumCallExpr,
-    TypedDictExpr, NewTypeExpr, PromoteExpr, AwaitExpr, TempNode, AssignmentExpr, ParamSpecExpr
+    TypedDictExpr, NewTypeExpr, PromoteExpr, AwaitExpr, TempNode, AssignmentExpr, ParamSpecExpr,
+    RefinementVarExpr,
 )
 from mypy.visitor import ExpressionVisitor
 
@@ -212,6 +213,9 @@ class _Hasher(ExpressionVisitor[Optional[Key]]):
         return None
 
     def visit_backquote_expr(self, e: BackquoteExpr) -> None:
+        return None
+
+    def visit_refinement_var_expr(self, e: RefinementVarExpr) -> None:
         return None
 
     def visit_type_var_expr(self, e: TypeVarExpr) -> None:

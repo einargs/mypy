@@ -457,6 +457,12 @@ class RefinementVar(RefinementExpr):
         self.name = name
         self.props = props
 
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, RefinementVar):
+            raise NotImplementedError
+
+        return self.name == other.name and self.props == other.props
+
     def serialize(self) -> JsonDict:
         return {'.class': 'RefinementVar',
                 'name': self.name,
@@ -474,12 +480,12 @@ class RefinementConstraint:
     or properties that are integers of tuples of integers.
     """
 
-    EQ: ClassVar = 0
-    NOT_EQ: ClassVar = 1
-    LT: ClassVar = 2
-    LT_EQ: ClassVar = 3
-    GT: ClassVar = 4
-    GT_EQ: ClassVar = 5
+    EQ: ClassVar = 0  # ==
+    NOT_EQ: ClassVar = 1  # !=
+    LT: ClassVar = 2  # >
+    LT_EQ: ClassVar = 3  # >=
+    GT: ClassVar = 4  # <
+    GT_EQ: ClassVar = 5  # <=
 
     __slots__ = ('left', 'kind', 'right')
 
@@ -523,7 +529,7 @@ class RefinementInfo:
 
     def __init__(
             self,
-            var: RefinementVar,
+            var: Optional[RefinementVar],
             constraints: list[RefinementConstraint]):
         self.var = var
         self.constraints = constraints
@@ -2485,24 +2491,25 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
             if c.kind == RefinementConstraint.NOT_EQ:
                 kind = "!="
             if c.kind == RefinementConstraint.LT:
-                kind = "<"
-            if c.kind == RefinementConstraint.LT_EQ:
-                kind = "<="
-            if c.kind == RefinementConstraint.GT:
                 kind = ">"
-            if c.kind == RefinementConstraint.GT_EQ:
+            if c.kind == RefinementConstraint.LT_EQ:
                 kind = ">="
+            if c.kind == RefinementConstraint.GT:
+                kind = "<"
+            if c.kind == RefinementConstraint.GT_EQ:
+                kind = "<="
             return "{} {} {}".format(left, kind, right)
 
-        var_str = expr_str(base.refinements.var)
+        constraints_str = ", ".join(constraint_str(c)
+            for c in base.refinements.constraints)
 
-        if len(base.refinements.constraints) > 0:
-            constraints_str = ", ".join(constraint_str(c)
-                for c in base.refinements.constraints)
+        if base.refinements.var is None:
+            assert constraints_str != "", "RefinementInfo created without any info"
+            return "{}{{{}}}".format(base_str, constraints_str)
+        else:
+            var_str = expr_str(base.refinements.var)
 
             return "{}{{{}: {}}}".format(base_str, var_str, constraints_str)
-        else:
-            return "{}{{{}:}}".format(base_str, var_str)
 
     def visit_unbound_type(self, t: UnboundType) -> str:
         s = t.name + '?'

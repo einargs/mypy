@@ -38,6 +38,7 @@ from mypy.types import (
     is_named_instance, union_items, TypeQuery, LiteralType,
     is_optional, remove_optional, TypeTranslator, StarType, get_proper_type, ProperType,
     get_proper_types, is_literal_type, TypeAliasType, TypeGuardedType, ParamSpecType,
+    BaseType,
 )
 from mypy.sametypes import is_same_type
 from mypy.messages import (
@@ -78,6 +79,7 @@ from mypy.visitor import NodeVisitor
 from mypy.join import join_types
 from mypy.treetransform import TransformVisitor
 from mypy.binder import ConditionalTypeBinder, get_declaration
+from mypy.vcbinder import VerificationBinder
 from mypy.meet import is_overlapping_erased_types, is_overlapping_types
 from mypy.options import Options
 from mypy.plugin import Plugin, CheckerPluginInterface
@@ -169,6 +171,8 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
     # Helper for managing conditional types
     binder: ConditionalTypeBinder
+    # Helper for checking refinement types
+    vcbinder: VerificationBinder
     # Helper for type checking expressions
     expr_checker: mypy.checkexpr.ExpressionChecker
 
@@ -242,6 +246,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
         self.tscope = Scope()
         self.scope = CheckerScope(tree)
         self.binder = ConditionalTypeBinder()
+        self.vc_binder = VerificationBinder(self.msg)
         self.globals = tree.names
         self.return_types = []
         self.dynamic_funcs = []
@@ -1022,7 +1027,13 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     # TODO: Find a way of working around this limitation
                     if len(expanded) >= 2:
                         self.binder.suppress_unreachable_warnings()
-                    self.accept(item.body)
+                    with self.vc_binder_enter_function():
+                        for arg in item.arguments:
+                            aty: Optional[Type] = arg.variable.type
+                            if aty is not None:
+                                self.vc_binder.add_var(arg.variable.name, aty)
+
+                        self.accept(item.body)
                 unreachable = self.binder.is_unreachable()
 
             if self.options.warn_no_return and not unreachable:
@@ -1049,6 +1060,13 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
             self.return_types.pop()
 
             self.binder = old_binder
+
+    @contextmanager
+    def vc_binder_enter_function(self) -> Iterator[None]:
+        old_binder = self.vc_binder
+        self.vc_binder = VerificationBinder(self.msg)
+        yield None
+        self.vc_binder = old_binder
 
     def check_default_args(self, item: FuncItem, body_is_trivial: bool) -> None:
         for arg in item.arguments:
@@ -3409,6 +3427,11 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
             if isinstance(return_type, UninhabitedType):
                 self.fail(message_registry.NO_RETURN_EXPECTED, s)
                 return
+
+            if isinstance(return_type, BaseType):
+                # If the refinement type check fails
+                if not self.vc_binder.check_subsumption(s.expr, return_type):
+                    self.fail("Refinement type check failed", s)
 
             if s.expr:
                 is_lambda = isinstance(self.scope.top_function(), LambdaExpr)

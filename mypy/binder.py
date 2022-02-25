@@ -5,7 +5,8 @@ from typing import Dict, List, Set, Iterator, Union, Optional, Tuple, cast
 from typing_extensions import DefaultDict, TypeAlias as _TypeAlias
 
 from mypy.types import (
-    Type, AnyType, PartialType, UnionType, TypeOfAny, NoneType, get_proper_type
+    Type, AnyType, PartialType, UnionType, TypeOfAny, NoneType, get_proper_type,
+    BaseType,
 )
 from mypy.subtypes import is_subtype
 from mypy.join import join_simple
@@ -14,6 +15,8 @@ from mypy.erasetype import remove_instance_last_known_values
 from mypy.nodes import Expression, Var, RefExpr
 from mypy.literals import Key, literal, literal_hash, subkeys
 from mypy.nodes import IndexExpr, MemberExpr, AssignmentExpr, NameExpr
+from mypy.messages import MessageBuilder
+import z3
 
 
 BindableExpression: _TypeAlias = Union[IndexExpr, MemberExpr, AssignmentExpr, NameExpr]

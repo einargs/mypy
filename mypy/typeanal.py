@@ -368,8 +368,7 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
             root = self.anal_type(t.args[0])
 
             if not isinstance(root, BaseType):
-                print("non-base type was refined:", type(root))
-                self.fail("Only BaseTypes can have refinement annotations.",
+                self.fail("Only BaseTypes can have refinement annotations",
                         root)
                 return AnyType(TypeOfAny.from_error)
 
@@ -378,22 +377,34 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                         root)
                 return AnyType(TypeOfAny.from_error)
 
-            local_var = self.convert_type_to_refinement_var(t.args[1])
-            if local_var is None:
-                self.fail("All Annotated refinement types need a variable as the"
-                        " second argument", t)
-                return AnyType(TypeOfAny.from_error)
+            if isinstance(t.args[1], UnboundType):
+                local_var = self.convert_type_to_refinement_var(t.args[1])
+                if local_var is None:
+                    self.fail("All Annotated refinement types need a variable as the"
+                            " second argument", t)
+                    return AnyType(TypeOfAny.from_error)
+                if len(local_var.props) != 0:
+                    self.fail("When declaring a refinement variable for a type, "
+                            "it cannot have member accesses", t)
+                    return AnyType(TypeOfAny.from_error)
+                con_args = t.args[2:]
+            else:
+                local_var = None
+                con_args = t.args[1:]
 
             constraints: list[RefinementConstraint] = []
-            for c in t.args[2:]:
+            for c in con_args:
                 if isinstance(c, ConstraintSynType):
                     constraints.append(c.value)
                 else:
                     self.fail("All Annotated refinement types accept only "
-                            "constraints after the first two arguments.", c)
+                            "constraints after the type and optional"
+                            "refinement variable.", c)
                     return AnyType(TypeOfAny.from_error)
 
             root.refinements = RefinementInfo(local_var, constraints)
+
+            print("root", root)
 
             return root
         elif fullname in ('typing_extensions.Required', 'typing.Required'):
@@ -426,14 +437,11 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
         props = t.name.split(".")
         name = props.pop(0)
 
-        # TODO: expand this to take advantage of the information in sym.
-        # This is how we read information about the definition of the refinement
-        # variables.
-        # Possibly I need to look at how type variables are handled. Look at
-        # visit_unbound_type_nonoptional.
+        # This looks up the definition of the refinement variable.
         sym = self.lookup_qualified(name, t)
         if sym is None or sym.node is None:
-            self.fail("Couldn't find symbol related to refinement variable", t)
+            # It seems lookup_qualified will throw it's own error.
+            # self.fail("Couldn't find symbol related to refinement variable", t)
             return None
 
         if not isinstance(sym.node, RefinementVarExpr):
