@@ -8,7 +8,7 @@ from typing_extensions import TypeAlias
 from mypy.types import (
     Type, AnyType, PartialType, UnionType, TypeOfAny, NoneType, get_proper_type,
     BaseType, RefinementConstraint, RefinementExpr, RefinementConstraintKind,
-    RefinementLiteral, RefinementVar, RefinementTuple,
+    RefinementLiteral, RefinementVar, RefinementTuple, RefinementValue,
 )
 from mypy.nodes import (
     Expression, Var, RefExpr, IndexExpr, MemberExpr, AssignmentExpr, NameExpr,
@@ -19,13 +19,7 @@ from mypy.messages import MessageBuilder
 import z3
 
 
-def vc_access(e: Expression) -> bool:
-    if isinstance(e, NameExpr):
-        return True
-    elif isinstance(e, MemberExpr):
-        return vc_access(e.expr)
-    else:
-        return False
+VarProp: TypeAlias = Union[str, int]
 
 
 class VerificationVar:
@@ -45,10 +39,14 @@ class VerificationVar:
     def __repr__(self) -> str: pass
 
     @abstractmethod
-    def extend(self, props: list[str]) -> 'VerificationVar':
+    def extend(self, props: list[VarProp]) -> 'VerificationVar':
         """Extends the variable with a list of properties.
         """
         pass
+
+
+def prop_list_str(base: str, props: list[VarProp]) -> str:
+    return "".join([base] + [f"[{v}]" if isinstance(v, int) else f".{v}" for v in props])
 
 
 class RealVar(VerificationVar):
@@ -58,19 +56,19 @@ class RealVar(VerificationVar):
     def __init__(
             self,
             name: str,
-            props: list[str] = []) -> None:
+            props: list[VarProp] = []) -> None:
         self.name = name
         self.props = props
 
     def subvars(self) -> 'list[VerificationVar]':
-        vars = [RealVar(self.name)]
+        vars: list[VerificationVar] = [RealVar(self.name)]
         props = []
         for p in self.props[:-1]:
             props.append(p)
             vars.append(RealVar(self.name, props.copy()))
         return vars
 
-    def extend(self, props: list[str]) -> 'VerificationVar':
+    def extend(self, props: list[VarProp]) -> 'VerificationVar':
         return RealVar(self.name, self.props + props)
 
     def __eq__(self, other: Any) -> bool:
@@ -79,37 +77,44 @@ class RealVar(VerificationVar):
         return self.name == other.name and self.props == other.props
 
     def __hash__(self) -> int:
-        fullname = ".".join([self.name] + self.props)
+        fullname = prop_list_str(self.name, self.props)
         return hash(("real_var", fullname))
 
     def __repr__(self) -> str:
-        fullname = ".".join([self.name] + self.props)
+        fullname = prop_list_str(self.name, self.props)
         return "var({})".format(fullname)
 
 
 class FreshVar(VerificationVar):
     """A type of verification var that can be introduced as fresh in a context.
     """
-    def __init__(self, id: int, props: list[str] = []):
+    def __init__(self, id: int, props: list[VarProp] = []):
         self.id = id
         self.props = props
 
     def subvars(self) -> 'list[VerificationVar]':
-        return []
+        vars: list[VerificationVar] = [FreshVar(self.id)]
+        props = []
+        for p in self.props[:-1]:
+            props.append(p)
+            vars.append(FreshVar(self.id, props.copy()))
+        return vars
 
-    def extend(self, props: list[str]) -> 'VerificationVar':
+    def extend(self, props: list[VarProp]) -> 'VerificationVar':
         return FreshVar(self.id, self.props + props)
 
     def __eq__(self, other: Any) -> bool:
         if not isinstance(other, FreshVar):
             return NotImplemented
-        return self.id == other.id
+        return self.id == other.id and self.props == other.props
 
     def __hash__(self) -> int:
-        return hash(("fresh_var", self.id))
+        fullname = prop_list_str(str(self.id), self.props)
+        return hash(("fresh_var", fullname))
 
     def __repr__(self) -> str:
-        return f"var(id={self.id})"
+        fullname = prop_list_str(str(self.id), self.props)
+        return f"var_id({fullname})"
 
 
 def to_real_var(e: Expression, props=[]) -> Optional[RealVar]:
@@ -121,33 +126,6 @@ def to_real_var(e: Expression, props=[]) -> Optional[RealVar]:
         return to_real_var(e.expr, props)
     else:
         return None
-
-
-class VCExpr:
-    __slots__ = ()
-
-
-class VCLiteral(VCExpr):
-    __slots__ = ('value',)
-
-    def __init__(self, value: int):
-        self.value = value
-
-
-class VCVar(VCExpr):
-    __slots__ = ('id',)
-
-    def __init__(self, id: int):
-        self.id = id
-
-
-class VCConstraint:
-    __slots__ = ('left', 'kind', 'right')
-
-    def __init__(self, left: VCExpr, kind: RefinementConstraintKind, right: VCExpr):
-        self.left = left
-        self.kind = kind
-        self.right = right
 
 
 SMTVar: TypeAlias = z3.ArithRef
@@ -212,23 +190,22 @@ class VerificationBinder:
         self.bound_var_to_name[ref_var] = RealVar(term_var)
         return
 
-    def translate_expr(self, expr: RefinementExpr) -> SMTExpr:
+    def translate_expr(self, expr: RefinementExpr,
+            *, ext_props: list[VarProp] = []) -> SMTExpr:
         if isinstance(expr, RefinementLiteral):
             return expr.value
-        elif isinstance(expr, RefinementTuple):
-            assert False, "Have not yet implemented tuple handling"
         elif isinstance(expr, RefinementVar):
             # Resolve anything where we have a term variable m, but we use the
             # refinement variable R to refer to it in constraints.
             default_var = RealVar(expr.name)
             base = self.bound_var_to_name.get(expr.name, default_var)
-            var = base.extend(expr.props)
+            var = base.extend(cast(list[VarProp], expr.props) + ext_props)
             for sv in var.subvars():
                 self.dependencies.setdefault(sv, set()).add(var)
 
             return self.get_smt_var(var)
         else:
-            assert False, "should be impossible"
+            assert False, "Should not be passed"
 
     @contextmanager
     def var_binding(self, ref_var: str, term_var: VerificationVar) -> Iterator[None]:
@@ -245,28 +222,68 @@ class VerificationBinder:
             yield None
             del self.bound_var_to_name[ref_var]
 
-    def translate_constraint(self,
+    def translate_to_constraints(self,
             con: RefinementConstraint,
-            *,
-            ctx: Context) -> SMTConstraint:
-        left = self.translate_expr(con.left)
-        right = self.translate_expr(con.right)
+            *, ctx: Context) -> list[SMTConstraint]:
+        """Translate a refinement constraint to smt solver constraints,
+        splitting it into multiple constraints if it contains a refinement
+        tuple.
+        """
+        left_tuple = isinstance(con.left, RefinementTuple)
+        right_tuple = isinstance(con.right, RefinementTuple)
+        if left_tuple and right_tuple:
+            self.fail("Should not compare two tuple expressions", ctx)
+            return []
+        elif left_tuple or right_tuple:
+            tuple_expr: RefinementTuple = cast(RefinementTuple,
+                    con.left if left_tuple else con.right)
+            var_expr = con.right if left_tuple else con.left
 
+            if not isinstance(var_expr, RefinementVar):
+                self.fail("Can only compare a tuple expression to a "
+                    "refinement variable", ctx)
+                return []
+
+            if con.kind != RefinementConstraint.EQ:
+                self.fail("Can only use == with tuple expressions", ctx)
+                return []
+
+            results: list[SMTConstraint] = []
+            for i, v in enumerate(tuple_expr.items):
+                tuple_item = self.translate_expr(v)
+                indexed_var = self.translate_expr(var_expr, ext_props=[i])
+                # We don't technically need to figure out left and right,
+                # but it's helpful.
+                left = tuple_item if left_tuple else indexed_var
+                right = indexed_var if left_tuple else tuple_item
+                results.append(left == right)
+            return results
+        else:
+            left = self.translate_expr(con.left)
+            right = self.translate_expr(con.right)
+            return [self.translate_single_constraint(
+                left, con.kind, right, ctx=ctx)]
+
+    def translate_single_constraint(self,
+            left: SMTExpr,
+            kind: RefinementConstraintKind,
+            right: SMTExpr,
+            *, ctx: Context) -> SMTConstraint:
         if not isinstance(left, z3.ArithRef) and not isinstance(right, z3.ArithRef):
             self.fail("A refinement constraint must include at least one "
                     "refinement variable", ctx)
 
-        if con.kind == RefinementConstraint.EQ:
+        if kind == RefinementConstraint.EQ:
             return left == right
-        elif con.kind == RefinementConstraint.NOT_EQ:
+        elif kind == RefinementConstraint.NOT_EQ:
             return left != right
-        elif con.kind == RefinementConstraint.LT:
+        elif kind == RefinementConstraint.LT:
             return left < right
-        elif con.kind == RefinementConstraint.LT_EQ:
+        elif kind == RefinementConstraint.LT_EQ:
             return left <= right
-        elif con.kind == RefinementConstraint.GT:
+        elif kind == RefinementConstraint.GT:
             return left > right
-        elif con.kind == RefinementConstraint.GT_EQ:
+        elif kind == RefinementConstraint.GT_EQ:
             return left >= right
 
     def add_var(self, var_name: str, typ: Type) -> None:
@@ -279,13 +296,16 @@ class VerificationBinder:
             self.add_bound_var(var_name, info.var.name, typ)
 
         for c in info.constraints:
-            con = self.translate_constraint(c, ctx=typ)
-            self.constraints.append(con)
+            cons = self.translate_to_constraints(c, ctx=typ)
+            self.constraints += cons
 
     def fail(self, msg: str, context: Context) -> None:
         self.msg.fail(msg, context)
 
     def var_from_expr(self, expr: Expression) -> Optional[VerificationVar]:
+        """Get a verification var for an expression. Will create verification
+        vars and constraints for integers, etc.
+        """
         if isinstance(expr, IntExpr):
             fresh_var = self.fresh_verification_var()
             smt_var = self.get_smt_var(fresh_var)
@@ -302,6 +322,7 @@ class VerificationBinder:
         """
         variables = list(self.var_versions.values())
         print("smt variables", variables)
+        print("constraints", self.constraints, constraints)
         cond = z3.ForAll(variables,
                 z3.Implies(z3.And(self.constraints), z3.And(constraints)))
         return self.smt_solver.check(cond) == z3.sat
@@ -333,8 +354,9 @@ class VerificationBinder:
             # TODO: implement those checks.
             assert expr is not None or info.var is not None
 
-            constraints = [self.translate_constraint(c, ctx=ctx)
-                    for c in info.constraints]
+            constraints = [smt_c
+                    for c in info.constraints
+                    for smt_c in self.translate_to_constraints(c, ctx=ctx)]
             if not self.check_implication(constraints):
                 self.fail(FAIL_MSG, target)
             return
@@ -345,8 +367,9 @@ class VerificationBinder:
                     "refinement type", target)
                 return
             with self.var_binding(info.var.name, var):
-                constraints = [self.translate_constraint(c, ctx=ctx)
-                        for c in info.constraints]
+                constraints = [smt_c
+                        for c in info.constraints
+                        for smt_c in self.translate_to_constraints(c, ctx=ctx)]
                 print("var_versions", self.var_versions)
                 print("constraints", self.constraints)
                 if not self.check_implication(constraints):

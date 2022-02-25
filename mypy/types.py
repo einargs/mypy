@@ -478,6 +478,9 @@ class RefinementVar(RefinementExpr):
         return ".".join([self.name] + self.props)
 
 
+RefinementValue: _TypeAlias = Union[RefinementVar, RefinementLiteral]
+
+
 class RefinementConstraint:
     """A constraint on a base type. Can constraint integers, tuples of integers,
     or properties that are integers of tuples of integers.

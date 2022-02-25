@@ -28,14 +28,17 @@ the ID to increment, so that future uses of the variable will be different.
 
 I'm going to need a stage where I convert `RefinementVar`s to either the actual
 in-scope variables or "meta" variables that are constant throughout type
-checking.
+checking. UPDATE: Actually, meta variables will just never be invalidated.
 
 Entering a new function scope should put vc conditons on a stack (probably using
 `@contextmanager`).
 
 # TODO
-- give literals refinement types
-- enable tuples (do I use the SMT vector stuff? look into it)
+- get the term level correspondence to tuple stuff working
+- enable assignment to variables
+- enable calling functions with refinement types
+- make sure that return values of refined functions that are assigned to
+  variables have refined types inferred.
 - add predicate/control flow based refinement
 - write tests? Maybe
 - design and implement the after condition stuff

@@ -3448,9 +3448,6 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 typ = get_proper_type(self.expr_checker.accept(
                     s.expr, return_type, allow_none_return=allow_none_func_call))
 
-                if isinstance(return_type, BaseType) and return_type.refinements is not None:
-                    print("typ", typ)
-
                 if defn.is_async_generator:
                     self.fail(message_registry.RETURN_IN_ASYNC_GENERATOR, s)
                     return
