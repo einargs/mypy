@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from typing import (
     Dict, List, Set, Iterator, Union, Optional, Tuple, cast, Any,
 )
-from typing_extensions import TypeAlias
+from typing_extensions import TypeAlias, TypeGuard
 
 from mypy.types import (
     Type, AnyType, PartialType, UnionType, TypeOfAny, NoneType, get_proper_type,
@@ -12,7 +12,7 @@ from mypy.types import (
 )
 from mypy.nodes import (
     Expression, Var, RefExpr, IndexExpr, MemberExpr, AssignmentExpr, NameExpr,
-    Context, IntExpr,
+    Context, IntExpr, Lvalue,
 )
 from mypy.literals import Key, literal, literal_hash, subkeys
 from mypy.messages import MessageBuilder
@@ -20,6 +20,12 @@ import z3
 
 
 VarProp: TypeAlias = Union[str, int]
+
+
+def is_refined_type(typ: Type) -> TypeGuard[BaseType]:
+    """Checks if a type is a base type and has refinement info.
+    """
+    return isinstance(typ, BaseType) and typ.refinements is not None
 
 
 class VerificationVar:
@@ -32,8 +38,16 @@ class VerificationVar:
     @abstractmethod
     def __hash__(self) -> int: pass
 
+    @property
     @abstractmethod
-    def subvars(self) -> 'list[VerificationVar]': pass
+    def props(self) -> list[VarProp]: pass
+
+    @abstractmethod
+    def copy_base(self, props: Optional[list[VarProp]] = None) -> 'VerificationVar':
+        """Create a new copy with the props as an empty list or the passed
+        props list.
+        """
+        pass
 
     @abstractmethod
     def __repr__(self) -> str: pass
@@ -46,6 +60,17 @@ class VerificationVar:
         """Extends the variable with a list of properties.
         """
         pass
+
+    def subvars(self) -> 'list[VerificationVar]':
+        if len(self.props) == 0:
+            return []
+
+        vars: list[VerificationVar] = [self.copy_base()]
+        props = []
+        for p in self.props[:-1]:
+            props.append(p)
+            vars.append(self.copy_base(props.copy()))
+        return vars
 
 
 def prop_list_str(base: str, props: list[VarProp]) -> str:
@@ -63,15 +88,16 @@ class RealVar(VerificationVar):
         if props is None:
             props = []
         self.name = name
-        self.props = props
+        self._props = props
 
-    def subvars(self) -> 'list[VerificationVar]':
-        vars: list[VerificationVar] = [RealVar(self.name)]
-        props = []
-        for p in self.props[:-1]:
-            props.append(p)
-            vars.append(RealVar(self.name, props.copy()))
-        return vars
+    @property
+    def props(self) -> list[VarProp]:
+        return self._props
+
+    def copy_base(self, props: Optional[list[VarProp]] = None) -> 'RealVar':
+        if props is None:
+            props = []
+        return RealVar(self.name, props)
 
     def extend(self, props: list[VarProp]) -> 'VerificationVar':
         return RealVar(self.name, self.props + props)
@@ -98,15 +124,16 @@ class FreshVar(VerificationVar):
         if props is None:
             props = []
         self.id = id
-        self.props = props
+        self._props = props
 
-    def subvars(self) -> 'list[VerificationVar]':
-        vars: list[VerificationVar] = [FreshVar(self.id)]
-        props = []
-        for p in self.props[:-1]:
-            props.append(p)
-            vars.append(FreshVar(self.id, props.copy()))
-        return vars
+    @property
+    def props(self) -> list[VarProp]:
+        return self._props
+
+    def copy_base(self, props: Optional[list[VarProp]] = None) -> 'FreshVar':
+        if props is None:
+            props = []
+        return FreshVar(self.id, props)
 
     def extend(self, props: list[VarProp]) -> 'VerificationVar':
         return FreshVar(self.id, self.props + props)
@@ -163,6 +190,9 @@ class VerificationBinder:
         # This will contain all of the constraints on smt variables.
         self.constraints: list[SMTConstraint] = []
 
+        #
+        self.smt_variables: list[SMTVar] = []
+
         # Maps variable names to the smt variables
         self.var_versions: Dict[VerificationVar, SMTVar] = {}
 
@@ -181,7 +211,9 @@ class VerificationBinder:
     def fresh_smt_var(self, var: VerificationVar) -> SMTVar:
         self.next_id += 1
         name = var.fullpath()
-        return z3.Int(f"{name}#{self.next_id}", ctx=self.smt_context)
+        smt_var = z3.Int(f"{name}#{self.next_id}", ctx=self.smt_context)
+        self.smt_variables.append(smt_var)
+        return smt_var
 
     def get_smt_var(self, var: VerificationVar) -> SMTVar:
         if var in self.var_versions:
@@ -192,18 +224,19 @@ class VerificationBinder:
             return fresh_var
 
     def invalidate_var(self, var: VerificationVar) -> None:
-        for dep in self.dependencies[var]:
-            self.invalidate_var(dep)
-        fresh_var = self.fresh_smt_var(var)
-        self.var_versions[var] = fresh_var
+        if var in self.var_versions:
+            del self.var_versions[var]
+            if var in self.dependencies:
+                for dep in self.dependencies[var]:
+                    self.invalidate_var
 
-    def add_bound_var(self, term_var: str, ref_var: str, context: Context) -> None:
-        if ref_var in self.bound_var_to_name:
-            self.fail("Tried to bind already bound refinement variable", context)
+    def invalidate_expr(self, expr: Expression) -> None:
+        """Invalidate the associated verification variable (if it exists).
+        """
+        var = self.var_from_expr(expr)
+        if var is None:
             return
-
-        self.bound_var_to_name[ref_var] = RealVar(term_var)
-        return
+        self.invalidate_var(var)
 
     def translate_expr(self, expr: RefinementExpr,
             *, ext_props: Optional[list[VarProp]] = None) -> SMTExpr:
@@ -303,17 +336,41 @@ class VerificationBinder:
         elif kind == RefinementConstraint.GT_EQ:
             return left >= right
 
-    def add_var(self, var_name: str, typ: Type) -> None:
+    def add_bound_var(self,
+            term_var: VerificationVar,
+            ref_var: str,
+            context: Context) -> None:
+        if ref_var in self.bound_var_to_name:
+            var = self.bound_var_to_name[ref_var]
+            if var in self.var_versions:
+                self.fail("Tried to bind already bound refinement variable",
+                        context)
+                return
+
+        self.bound_var_to_name[ref_var] = term_var
+        return
+
+    def add_var(self, var: VerificationVar, typ: Type) -> None:
         if not isinstance(typ, BaseType) or typ.refinements is None:
             return
         info = typ.refinements
 
         if info.var is not None:
-            self.add_bound_var(var_name, info.var.name, typ)
+            self.add_bound_var(var, info.var.name, typ)
 
         for c in info.constraints:
             cons = self.translate_to_constraints(c, ctx=typ)
             self.constraints += cons
+
+    def add_argument(self, arg_name: str, typ: Type) -> None:
+        var = RealVar(arg_name)
+        self.add_var(var, typ)
+
+    def add_lvalue(self, lvalue: Lvalue, typ: Type) -> None:
+        var = self.var_from_expr(lvalue)
+        if var is None:
+            return
+        self.add_var(var, typ)
 
     def fail(self, msg: str, context: Context) -> None:
         self.msg.fail(msg, context)
@@ -336,11 +393,12 @@ class VerificationBinder:
 
         Returns false if the implication is not satisfiable.
         """
-        variables = list(self.var_versions.values())
+        variables = self.smt_variables
         print("Given:", self.constraints)
         print("Goal:", constraints)
         cond = z3.ForAll(variables,
                 z3.Implies(z3.And(self.constraints), z3.And(constraints)))
+        # print("Condition:", cond)
         return self.smt_solver.check(cond) == z3.sat
 
     def check_subsumption(self,
@@ -375,6 +433,7 @@ class VerificationBinder:
                     for smt_c in self.translate_to_constraints(c, ctx=ctx)]
             if not self.check_implication(constraints):
                 self.fail(FAIL_MSG, target)
+                print("type check failed")
             return
         else:
             var = self.var_from_expr(expr)
@@ -388,4 +447,5 @@ class VerificationBinder:
                         for smt_c in self.translate_to_constraints(c, ctx=ctx)]
                 if not self.check_implication(constraints):
                     self.fail(FAIL_MSG, target)
+                    print("type check failed")
                 return

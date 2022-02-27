@@ -37,9 +37,35 @@ def test_tuple(
     return m2
 
 
-def test_tuple_member(v: Annotated[array, V, V.shape == (1, 5)]
-        ) -> Annotated[int, A, A > 2]:
+def test_tuple_member(
+        v: Annotated[array, V, V.shape == (1, 5)]
+) -> Annotated[int, A, A > 2]:
     return v.shape[1]
+
+
+def test_assignment(
+    v: Annotated[array, V, V.shape == (1, 5)]
+) -> Annotated[int, A, A > 2]:
+    a: Annotated[int, B, B > 3] = v.shape[1]
+    b = a
+    return b
+
+
+# Should have failures.
+def test_assignment_fails(
+    v: Annotated[array, V, V.shape == (1, 5)]
+) -> Annotated[int, A, A > 0]:
+    a: Annotated[int, B, B > 3] = v.shape[1]
+    b = a
+
+    c: Annotated[int, C, C > 4] = v.shape[1]  # should fail
+    d: Annotated[int, X, X > 1] = a  # should fail
+    e = d
+    # f type checks even though d doesn't, because the errors are isolated.
+    f: Annotated[int, Y, Y > 0] = e
+    print(a, b, c, d, f)  # just using them to stop complaints
+
+    return v.shape[0]
 
 
 def minimal(m: Annotated[Container, A, A.value > 2]) -> Annotated[int, B, B > 1]:

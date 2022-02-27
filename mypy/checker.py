@@ -79,7 +79,7 @@ from mypy.visitor import NodeVisitor
 from mypy.join import join_types
 from mypy.treetransform import TransformVisitor
 from mypy.binder import ConditionalTypeBinder, get_declaration
-from mypy.vcbinder import VerificationBinder
+from mypy.vcbinder import VerificationBinder, is_refined_type
 from mypy.meet import is_overlapping_erased_types, is_overlapping_types
 from mypy.options import Options
 from mypy.plugin import Plugin, CheckerPluginInterface
@@ -1027,11 +1027,17 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     # TODO: Find a way of working around this limitation
                     if len(expanded) >= 2:
                         self.binder.suppress_unreachable_warnings()
+                    # TODO: This is just for debugging. If a function has
+                    # arguments with refinements, this logs the names to give
+                    # context for other logs.
+                    if any(map(is_refined_type, (a.variable.type
+                            for a in item.arguments))):
+                        print("\n" + item.name)
                     with self.vc_binder_enter_function():
                         for arg in item.arguments:
                             aty: Optional[Type] = arg.variable.type
                             if aty is not None:
-                                self.vc_binder.add_var(arg.variable.name, aty)
+                                self.vc_binder.add_argument(arg.variable.name, aty)
 
                         self.accept(item.body)
                 unreachable = self.binder.is_unreachable()
@@ -2254,10 +2260,16 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     return
 
             if lvalue_type:
+                # Check existing annotations
+                if isinstance(lvalue_type, BaseType):
+                    self.vc_binder.check_subsumption(rvalue, lvalue_type, rvalue)
+                    self.vc_binder.add_lvalue(lvalue, lvalue_type)
+
                 if isinstance(lvalue_type, PartialType) and lvalue_type.type is None:
                     # Try to infer a proper type for a variable with a partial None type.
                     rvalue_type = self.expr_checker.accept(rvalue)
-                    if isinstance(get_proper_type(rvalue_type), NoneType):
+                    proper_rvalue_type = get_proper_type(rvalue_type)
+                    if isinstance(proper_rvalue_type, NoneType):
                         # This doesn't actually provide any additional information -- multiple
                         # None initializers preserve the partial None type.
                         return
@@ -2328,8 +2340,10 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
                 # Special case: only non-abstract non-protocol classes can be assigned to
                 # variables with explicit type Type[A], where A is protocol or abstract.
+
                 rvalue_type = get_proper_type(rvalue_type)
                 lvalue_type = get_proper_type(lvalue_type)
+
                 if (isinstance(rvalue_type, CallableType) and rvalue_type.is_type_obj() and
                         (rvalue_type.type_object().is_abstract or
                          rvalue_type.type_object().is_protocol) and
@@ -2345,10 +2359,14 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                         self.binder.assign_type(lvalue, rvalue_type, lvalue_type, False)
 
             elif index_lvalue:
+                # TODO: do I need to deal with refinement type info on this
+                # branch?
                 self.check_indexed_assignment(index_lvalue, rvalue, lvalue)
 
             if inferred:
                 rvalue_type = self.expr_checker.accept(rvalue)
+                # Add this to the refinement types
+                self.vc_binder.add_lvalue(lvalue, rvalue_type)
                 if not inferred.is_final:
                     rvalue_type = remove_instance_last_known_values(rvalue_type)
                 self.infer_variable_type(inferred, lvalue, rvalue_type, rvalue)

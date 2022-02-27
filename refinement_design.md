@@ -35,6 +35,13 @@ Entering a new function scope should put vc conditons on a stack (probably using
 
 # TODO
 - enable assignment to variables
+  * invalidate verification vars that are assigned to
+  * Add variables with refinement types to things.
+  * if the type of a variable is inferred and should be a refined type, make
+    sure it is.
+  * test multiple assignments
+  * currently I don't think this can handle adding refinement type info to
+    indexed lvalues.
 - enable calling functions with refinement types
 - get destructuring a tuple working
 - make sure that return values of refined functions that are assigned to
@@ -49,6 +56,11 @@ Entering a new function scope should put vc conditons on a stack (probably using
 - inference of refinement types esp. for literals. This means taking `a = 1` and
   figuring out that the inferred type of `a` should be
   `Annotated[int, A, A == 1]`.
+
+# Luke thoughts
+- See how much I can do without needing to add annotations
+- How much "why" information can I give?
+
 
 # Fun syntax
 I could take advantage of the recongition of slice syntax to do:

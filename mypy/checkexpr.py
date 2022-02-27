@@ -198,6 +198,9 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         return self.narrow_type_from_binder(e, result)
 
     def analyze_ref_expr(self, e: RefExpr, lvalue: bool = False) -> Type:
+        # This covers NameExpr and MemberExpr
+        self.chk.vc_binder.invalidate_expr(e)
+
         result: Optional[Type] = None
         node = e.node
 
@@ -2083,6 +2086,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
     def visit_member_expr(self, e: MemberExpr, is_lvalue: bool = False) -> Type:
         """Visit member expression (of form e.id)."""
+        self.chk.vc_binder.invalidate_expr(e)
         self.chk.module_refs.update(extract_refexpr_names(e))
         result = self.analyze_ordinary_member_access(e, is_lvalue)
         return self.narrow_type_from_binder(e, result)
@@ -2933,6 +2937,9 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
         It may also represent type application.
         """
+        # invalidate associated refinement constraints for this
+        self.chk.vc_binder.invalidate_expr(e)
+
         result = self.visit_index_expr_helper(e)
         result = get_proper_type(self.narrow_type_from_binder(e, result))
         if (self.is_literal_context() and isinstance(result, Instance)
