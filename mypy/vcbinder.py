@@ -1,7 +1,7 @@
 from abc import ABCMeta, abstractmethod
 from contextlib import contextmanager
 from typing import (
-    Dict, List, Set, Iterator, Union, Optional, Tuple, cast, Any,
+    Dict, List, Set, Iterator, Union, Optional, Tuple, cast, Any, Iterable,
 )
 from typing_extensions import TypeAlias, TypeGuard
 
@@ -11,9 +11,17 @@ from mypy.types import (
     RefinementLiteral, RefinementVar, RefinementTuple, RefinementValue,
 )
 from mypy.nodes import (
-    Expression, Var, RefExpr, IndexExpr, MemberExpr, AssignmentExpr, NameExpr,
-    Context, IntExpr, Lvalue,
+    Expression, ComparisonExpr, OpExpr, MemberExpr, UnaryExpr, StarExpr, IndexExpr,
+    NameExpr, LITERAL_TYPE, IntExpr, FloatExpr, ComplexExpr, StrExpr, BytesExpr,
+    UnicodeExpr, ListExpr, TupleExpr, SetExpr, DictExpr, CallExpr, SliceExpr, CastExpr,
+    ConditionalExpr, EllipsisExpr, YieldFromExpr, YieldExpr, RevealExpr, SuperExpr,
+    TypeApplication, LambdaExpr, ListComprehension, SetComprehension, DictionaryComprehension,
+    GeneratorExpr, BackquoteExpr, TypeVarExpr, TypeAliasExpr, NamedTupleExpr, EnumCallExpr,
+    TypedDictExpr, NewTypeExpr, PromoteExpr, AwaitExpr, TempNode, AssignmentExpr, ParamSpecExpr,
+    RefinementVarExpr, Context, Lvalue,
 )
+import mypy.checker
+from mypy.visitor import ExpressionVisitor
 from mypy.literals import Key, literal, literal_hash, subkeys
 from mypy.messages import MessageBuilder
 import z3
@@ -178,8 +186,12 @@ class VerificationBinder:
     """Deals with generation verification conditions.
     """
 
-    def __init__(self, msg: MessageBuilder):
-        self.msg = msg
+    def __init__(self, chk: 'mypy.checker.TypeChecker'):
+        # The parent type checker
+        self.chk = chk
+
+        # The message builder
+        self.msg = chk.msg
 
         self.next_id = 0
 
@@ -224,19 +236,20 @@ class VerificationBinder:
             return fresh_var
 
     def invalidate_var(self, var: VerificationVar) -> None:
+        """Invalidate a variable, forcing the creation of a new smt variable
+        with no associated constraints the next time it is used.
+        """
         if var in self.var_versions:
             del self.var_versions[var]
             if var in self.dependencies:
                 for dep in self.dependencies[var]:
-                    self.invalidate_var
+                    self.invalidate_var(dep)
 
-    def invalidate_expr(self, expr: Expression) -> None:
-        """Invalidate the associated verification variable (if it exists).
+    def invalidate_vars_in_expr(self, expr: Expression) -> None:
+        """Invalidate all mentions of `RealVar`s in an expression.
         """
-        var = self.var_from_expr(expr)
-        if var is None:
-            return
-        self.invalidate_var(var)
+        invalidator = Invalidator(self)
+        expr.accept(invalidator)
 
     def translate_expr(self, expr: RefinementExpr,
             *, ext_props: Optional[list[VarProp]] = None) -> SMTExpr:
@@ -271,6 +284,23 @@ class VerificationBinder:
             self.bound_var_to_name[ref_var] = term_var
             yield None
             del self.bound_var_to_name[ref_var]
+
+    @contextmanager
+    def var_bindings(self, bindings: list[tuple[str, VerificationVar]]) -> Iterator[None]:
+        """Temporarily binds multiple refinement variables to base verification
+        variables.
+        """
+        old_vars: list[Optional[VerificationVar]] = []
+        for ref_var, term_var in bindings:
+            old_vars.append(self.bound_var_to_name.get(ref_var))
+            self.bound_var_to_name[ref_var] = term_var
+        yield None
+        for i, (ref_var, _) in enumerate(bindings):
+            old = old_vars[i]
+            if old is None:
+                del self.bound_var_to_name[ref_var]
+            else:
+                self.bound_var_to_name[ref_var] = old
 
     def translate_to_constraints(self,
             con: RefinementConstraint,
@@ -350,7 +380,7 @@ class VerificationBinder:
         self.bound_var_to_name[ref_var] = term_var
         return
 
-    def add_var(self, var: VerificationVar, typ: Type) -> None:
+    def add_var(self, var: VerificationVar, typ: Type, *, ctx: Context) -> None:
         if not isinstance(typ, BaseType) or typ.refinements is None:
             return
         info = typ.refinements
@@ -359,31 +389,77 @@ class VerificationBinder:
             self.add_bound_var(var, info.var.name, typ)
 
         for c in info.constraints:
-            cons = self.translate_to_constraints(c, ctx=typ)
+            cons = self.translate_to_constraints(c, ctx=ctx)
             self.constraints += cons
 
-    def add_argument(self, arg_name: str, typ: Type) -> None:
+    def add_argument(self, arg_name: str, typ: Type, *, ctx: Context) -> None:
         var = RealVar(arg_name)
-        self.add_var(var, typ)
+        self.add_var(var, typ, ctx=ctx)
 
     def add_lvalue(self, lvalue: Lvalue, typ: Type) -> None:
-        var = self.var_from_expr(lvalue)
+        var = to_real_var(lvalue)
         if var is None:
             return
-        self.add_var(var, typ)
+        self.add_var(var, typ, ctx=lvalue)
 
     def fail(self, msg: str, context: Context) -> None:
         self.msg.fail(msg, context)
 
-    def var_from_expr(self, expr: Expression) -> Optional[VerificationVar]:
-        """Get a verification var for an expression. Will create verification
-        vars and constraints for integers, etc.
+    def var_for_call_expr(
+            self,
+            ret_type: BaseType,
+            bindings: list[Tuple[str, Expression, Type]],
+            ctx: Context
+    ) -> Optional[VerificationVar]:
+        if ret_type.refinements is None:
+            return None
+
+        fresh_var = self.fresh_verification_var()
+        var_bindings: list[tuple[str, VerificationVar]] = []
+        for ref_var, expr, expr_type in bindings:
+            expr_var = self.var_from_expr(expr, expr_type)
+            if expr_var is not None:
+                var_bindings.append((ref_var, expr_var))
+        # TODO: I think I need to generalize the idea of a bound variable,
+        # because currently this won't catch overlapping refinement variables.
+        # OTOH maybe that's okay because it'll be caught when it's defined?
+        if ret_type.refinements.var is not None:
+            var_bindings.append((ret_type.refinements.var.name, fresh_var))
+        with self.var_bindings(var_bindings):
+            cons = []
+            for c in ret_type.refinements.constraints:
+                cons += self.translate_to_constraints(c, ctx=ctx)
+            print("for", fresh_var, "constraints", cons)
+            self.constraints += cons
+        return fresh_var
+
+    def var_from_expr(
+            self,
+            expr: Expression,
+            expr_type: Optional[Type]
+    ) -> Optional[VerificationVar]:
+        """Convert an expression verification var with the appropriate
+        constraints.
+
+        This currently handles converting expressions to RealVars, integer
+        literals, and call expressions.
         """
         if isinstance(expr, IntExpr):
             fresh_var = self.fresh_verification_var()
             smt_var = self.get_smt_var(fresh_var)
             self.constraints.append(smt_var == expr.value)
             return fresh_var
+        elif isinstance(expr, CallExpr):
+            assert expr_type is not None, "I don't think this should happen?"
+
+            if is_refined_type(expr_type) and expr_type.refinements is not None:
+                print("call vc_var", expr_type.refinements.verification_var)
+                return expr_type.refinements.verification_var
+            else:
+                return None
+            # fresh_var = self.fresh_verification_var()
+            # TODO: I'm going to have to change this up when this refers to
+            # refinement variables that are passed in.
         else:
             return to_real_var(expr)
 
@@ -394,6 +470,7 @@ class VerificationBinder:
         Returns false if the implication is not satisfiable.
         """
         variables = self.smt_variables
+        print("Variables:", variables)
         print("Given:", self.constraints)
         print("Goal:", constraints)
         cond = z3.ForAll(variables,
@@ -403,8 +480,9 @@ class VerificationBinder:
 
     def check_subsumption(self,
             expr: Optional[Expression],
-            target: BaseType,
-            ctx: Context) -> None:
+            expr_type: Optional[Type],
+            target: Type,
+            *, ctx: Context) -> None:
         """This is the meat of the refinement type checking.
 
         Here we check whether an expression's type subsumes the type it needs
@@ -415,6 +493,10 @@ class VerificationBinder:
         the associated `VCConstraint`s, do the `VCConstraint`s of the new type
         hold?
         """
+        if not (isinstance(expr_type, BaseType)
+                and isinstance(target, BaseType)):
+            return
+
         info = target.refinements
         if info is None:
             return
@@ -436,11 +518,13 @@ class VerificationBinder:
                 print("type check failed")
             return
         else:
-            var = self.var_from_expr(expr)
+            var = self.var_from_expr(expr, expr_type)
             if var is None:
+                print("could not type check...", expr, "against", target)
                 self.fail("could not type check expression against "
                     "refinement type", target)
                 return
+            print("var binding", info.var.name, "to", var)
             with self.var_binding(info.var.name, var):
                 constraints = [smt_c
                         for c in info.constraints
@@ -449,3 +533,171 @@ class VerificationBinder:
                     self.fail(FAIL_MSG, target)
                     print("type check failed")
                 return
+
+
+class Invalidator(ExpressionVisitor[None]):
+    def __init__(self, parent: 'VerificationBinder'):
+        self.vc_binder = parent
+
+    def invalidate(self, expr: Expression) -> None:
+        """Invalidate the associated `RealVar` (if it exists).
+        """
+        var = to_real_var(expr)
+        if var is None:
+            return
+        self.vc_binder.invalidate_var(var)
+
+    def visit_int_expr(self, e: IntExpr) -> None:
+        return None
+
+    def visit_str_expr(self, e: StrExpr) -> None:
+        return None
+
+    def visit_bytes_expr(self, e: BytesExpr) -> None:
+        return None
+
+    def visit_unicode_expr(self, e: UnicodeExpr) -> None:
+        return None
+
+    def visit_float_expr(self, e: FloatExpr) -> None:
+        return None
+
+    def visit_complex_expr(self, e: ComplexExpr) -> None:
+        return None
+
+    def visit_star_expr(self, e: StarExpr) -> None:
+        e.accept(self)
+
+    def visit_name_expr(self, e: NameExpr) -> None:
+        self.invalidate(e)
+
+    def visit_member_expr(self, e: MemberExpr) -> None:
+        self.invalidate(e)
+
+    def visit_op_expr(self, e: OpExpr) -> None:
+        e.left.accept(self)
+        e.right.accept(self)
+
+    def visit_comparison_expr(self, e: ComparisonExpr) -> None:
+        for o in e.operands:
+            o.accept(self)
+
+    def visit_unary_expr(self, e: UnaryExpr) -> None:
+        e.expr.accept(self)
+
+    def seq(self, iterable: Iterable[Expression]) -> None:
+        for i in iterable:
+            i.accept(self)
+
+    def opt(self, expr: Optional[Expression]) -> None:
+        if expr is not None:
+            expr.accept(self)
+
+    def visit_list_expr(self, e: ListExpr) -> None:
+        self.seq(e.items)
+
+    def visit_dict_expr(self, e: DictExpr) -> None:
+        for k, v in e.items:
+            v.accept(self)
+
+    def visit_tuple_expr(self, e: TupleExpr) -> None:
+        self.seq(e.items)
+
+    def visit_set_expr(self, e: SetExpr) -> None:
+        self.seq(e.items)
+
+    def visit_index_expr(self, e: IndexExpr) -> None:
+        self.invalidate(e)
+
+    def visit_assignment_expr(self, e: AssignmentExpr) -> None:
+        e.target.accept(self)
+        e.value.accept(self)
+
+    def visit_call_expr(self, e: CallExpr) -> None:
+        e.callee.accept(self)
+        self.seq(e.args)
+
+    def visit_slice_expr(self, e: SliceExpr) -> None:
+        self.opt(e.begin_index)
+        self.opt(e.end_index)
+        self.opt(e.stride)
+
+    def visit_cast_expr(self, e: CastExpr) -> None:
+        e.expr.accept(self)
+
+    def visit_conditional_expr(self, e: ConditionalExpr) -> None:
+        e.cond.accept(self)
+        e.if_expr.accept(self)
+        e.else_expr.accept(self)
+
+    def visit_ellipsis(self, e: EllipsisExpr) -> None:
+        return None
+
+    def visit_yield_from_expr(self, e: YieldFromExpr) -> None:
+        e.expr.accept(self)
+
+    def visit_yield_expr(self, e: YieldExpr) -> None:
+        e.expr.accept(self)
+
+    def visit_reveal_expr(self, e: RevealExpr) -> None:
+        return None
+
+    def visit_super_expr(self, e: SuperExpr) -> None:
+        e.call.accept(self)
+
+    def visit_type_application(self, e: TypeApplication) -> None:
+        return None
+
+    def visit_lambda_expr(self, e: LambdaExpr) -> None:
+        e.expr.accept(self)
+
+    # TODO: right now we're just ignoring generator stuff, so
+    # in the future I should implement that if needed.
+    def visit_list_comprehension(self, e: ListComprehension) -> None:
+        return None
+
+    def visit_set_comprehension(self, e: SetComprehension) -> None:
+        return None
+
+    def visit_dictionary_comprehension(self, e: DictionaryComprehension) -> None:
+        return None
+
+    def visit_generator_expr(self, e: GeneratorExpr) -> None:
+        return None
+
+    def visit_backquote_expr(self, e: BackquoteExpr) -> None:
+        e.expr.accept(self)
+        return None
+
+    def visit_refinement_var_expr(self, e: RefinementVarExpr) -> None:
+        return None
+
+    def visit_type_var_expr(self, e: TypeVarExpr) -> None:
+        return None
+
+    def visit_paramspec_expr(self, e: ParamSpecExpr) -> None:
+        return None
+
+    def visit_type_alias_expr(self, e: TypeAliasExpr) -> None:
+        return None
+
+    def visit_namedtuple_expr(self, e: NamedTupleExpr) -> None:
+        return None
+
+    def visit_enum_call_expr(self, e: EnumCallExpr) -> None:
+        return None
+
+    def visit_typeddict_expr(self, e: TypedDictExpr) -> None:
+        return None
+
+    def visit_newtype_expr(self, e: NewTypeExpr) -> None:
+        return None
+
+    def visit__promote_expr(self, e: PromoteExpr) -> None:
+        return None
+
+    def visit_await_expr(self, e: AwaitExpr) -> None:
+        e.expr.accept(self)
+
+    def visit_temp_node(self, e: TempNode) -> None:
+        return None

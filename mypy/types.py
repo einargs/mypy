@@ -6,7 +6,7 @@ from abc import abstractmethod
 
 from typing import (
     Any, TypeVar, Dict, List, Tuple, cast, Set, Optional, Union, Iterable, NamedTuple,
-    Sequence, Literal
+    Sequence, Literal,
 )
 from typing_extensions import ClassVar, Final, TYPE_CHECKING, overload, TypeAlias as _TypeAlias
 
@@ -20,6 +20,8 @@ from mypy.nodes import (
 from mypy.util import IdMapper
 from mypy.bogus_type import Bogus
 
+if TYPE_CHECKING:
+    from mypy.vcbinder import FreshVar
 
 T = TypeVar('T')
 
@@ -533,14 +535,17 @@ class RefinementInfo:
     """All information about a refined base type.
     """
 
-    __slots__ = ('var', 'constraints')
+    __slots__ = ('var', 'constraints', 'verification_var')
 
     def __init__(
             self,
             var: Optional[RefinementVar],
-            constraints: list[RefinementConstraint]):
+            constraints: list[RefinementConstraint],
+            verification_var: Optional['FreshVar'] = None
+            ):
         self.var = var
         self.constraints = constraints
+        self.verification_var = verification_var
 
     def serialize(self) -> JsonDict:
         return {'var': self.var.serialize(),
@@ -553,6 +558,9 @@ class RefinementInfo:
         return RefinementInfo(
                 RefinementVar.deserialize(data['var']),
                 [RefinementConstraint.deserialize(c) for c in data['constraints']])
+
+    def copy_with_vc_var(self, vc_var: 'FreshVar') -> 'RefinementInfo':
+        return RefinementInfo(self.var, self.constraints, vc_var)
 
 
 class BaseType(ProperType):
@@ -567,6 +575,10 @@ class BaseType(ProperType):
             refinements: Optional[RefinementInfo] = None):
         self.refinements = refinements
         super().__init__(line, column)
+
+    @abstractmethod
+    def copy_with_vc_var(self, vc_var: 'FreshVar') -> 'BaseType':
+        pass
 
 
 class ConstraintSynType(ProperType):
@@ -1110,6 +1122,16 @@ class NoneType(BaseType):
             if 'refinements' in data else None
         return NoneType(refinements=refinements)
 
+    def copy_modified(self, *,
+                      refinements: Bogus[Optional[RefinementInfo]] = _dummy
+                      ) -> 'NoneType':
+        return NoneType(self.line, self.column,
+                self.refinements if refinements is _dummy else refinements)
+
+    def copy_with_vc_var(self, vc_var: 'FreshVar') -> 'NoneType':
+        return self.copy_modified(refinements=self.refinements
+                .copy_with_vc_var(vc_var))
+
 
 # NoneType used to be called NoneTyp so to avoid needlessly breaking
 # external plugins we keep that alias here.
@@ -1305,7 +1327,9 @@ class Instance(BaseType):
     def copy_modified(self, *,
                       args: Bogus[List[Type]] = _dummy,
                       erased: Bogus[bool] = _dummy,
-                      last_known_value: Bogus[Optional['LiteralType']] = _dummy) -> 'Instance':
+                      last_known_value: Bogus[Optional['LiteralType']] = _dummy,
+                      refinements: Bogus[Optional[RefinementInfo]] = _dummy
+                      ) -> 'Instance':
         return Instance(
             self.type,
             args if args is not _dummy else self.args,
@@ -1313,8 +1337,12 @@ class Instance(BaseType):
             self.column,
             erased if erased is not _dummy else self.erased,
             last_known_value if last_known_value is not _dummy else self.last_known_value,
-            self.refinements
+            refinements if refinements is not _dummy else self.refinements
         )
+
+    def copy_with_vc_var(self, vc_var: 'FreshVar') -> 'Instance':
+        return self.copy_modified(refinements=self.refinements
+                .copy_with_vc_var(vc_var))
 
     def has_readable_member(self, name: str) -> bool:
         return self.type.has_readable_member(name)
@@ -1855,13 +1883,21 @@ class TupleType(BaseType):
                          refinements=refinements)
 
     def copy_modified(self, *, fallback: Optional[Instance] = None,
-                      items: Optional[List[Type]] = None) -> 'TupleType':
+                      items: Optional[List[Type]] = None,
+                      refinements: Bogus[Optional[RefinementInfo]] = _dummy
+                      ) -> 'TupleType':
         if fallback is None:
             fallback = self.partial_fallback
         if items is None:
             items = self.items
+        if refinements is _dummy:
+            refinements = self.refinements
         return TupleType(items, fallback, self.line, self.column,
-                refinements=self.refinements)
+                refinements=refinements)
+
+    def copy_with_vc_var(self, vc_var: 'FreshVar') -> 'TupleType':
+        return self.copy_modified(refinements=self.refinements
+                .copy_with_vc_var(vc_var))
 
     def slice(self, begin: Optional[int], end: Optional[int],
               stride: Optional[int]) -> 'TupleType':

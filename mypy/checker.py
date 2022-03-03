@@ -246,7 +246,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
         self.tscope = Scope()
         self.scope = CheckerScope(tree)
         self.binder = ConditionalTypeBinder()
-        self.vc_binder = VerificationBinder(self.msg)
+        self.vc_binder = VerificationBinder(self)
         self.globals = tree.names
         self.return_types = []
         self.dynamic_funcs = []
@@ -1030,14 +1030,15 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     # TODO: This is just for debugging. If a function has
                     # arguments with refinements, this logs the names to give
                     # context for other logs.
-                    if any(map(is_refined_type, (a.variable.type
-                            for a in item.arguments))):
+                    if (any(is_refined_type(a.variable.type)
+                            for a in item.arguments if a.variable.type is not None)
+                            or is_refined_type(typ.ret_type)):
                         print("\n" + item.name)
                     with self.vc_binder_enter_function():
                         for arg in item.arguments:
                             aty: Optional[Type] = arg.variable.type
                             if aty is not None:
-                                self.vc_binder.add_argument(arg.variable.name, aty)
+                                self.vc_binder.add_argument(arg.variable.name, aty, ctx=arg)
 
                         self.accept(item.body)
                 unreachable = self.binder.is_unreachable()
@@ -1070,7 +1071,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
     @contextmanager
     def vc_binder_enter_function(self) -> Iterator[None]:
         old_binder = self.vc_binder
-        self.vc_binder = VerificationBinder(self.msg)
+        self.vc_binder = VerificationBinder(self)
         yield None
         self.vc_binder = old_binder
 
@@ -2260,11 +2261,6 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     return
 
             if lvalue_type:
-                # Check existing annotations
-                if isinstance(lvalue_type, BaseType):
-                    self.vc_binder.check_subsumption(rvalue, lvalue_type, rvalue)
-                    self.vc_binder.add_lvalue(lvalue, lvalue_type)
-
                 if isinstance(lvalue_type, PartialType) and lvalue_type.type is None:
                     # Try to infer a proper type for a variable with a partial None type.
                     rvalue_type = self.expr_checker.accept(rvalue)
@@ -2344,6 +2340,14 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 rvalue_type = get_proper_type(rvalue_type)
                 lvalue_type = get_proper_type(lvalue_type)
 
+                # Check existing refinement annotations
+                if lvalue_type is not None:
+                    self.vc_binder.check_subsumption(rvalue, rvalue_type,
+                            lvalue_type, ctx=rvalue)
+                    self.vc_binder.add_lvalue(lvalue, lvalue_type)
+                    # Now we invalidate all the refinement variables after checking
+                    self.vc_binder.invalidate_vars_in_expr(rvalue)
+
                 if (isinstance(rvalue_type, CallableType) and rvalue_type.is_type_obj() and
                         (rvalue_type.type_object().is_abstract or
                          rvalue_type.type_object().is_protocol) and
@@ -2365,8 +2369,11 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
             if inferred:
                 rvalue_type = self.expr_checker.accept(rvalue)
+                # Now we invalidate all the refinement variables after checking
+                self.vc_binder.invalidate_vars_in_expr(rvalue)
                 # Add this to the refinement types
                 self.vc_binder.add_lvalue(lvalue, rvalue_type)
+
                 if not inferred.is_final:
                     rvalue_type = remove_instance_last_known_values(rvalue_type)
                 self.infer_variable_type(inferred, lvalue, rvalue_type, rvalue)
@@ -3446,10 +3453,6 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 self.fail(message_registry.NO_RETURN_EXPECTED, s)
                 return
 
-            if isinstance(return_type, BaseType):
-                # If the refinement type check fails
-                self.vc_binder.check_subsumption(s.expr, return_type, s)
-
             if s.expr:
                 is_lambda = isinstance(self.scope.top_function(), LambdaExpr)
                 declared_none_return = isinstance(return_type, NoneType)
@@ -3465,6 +3468,12 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 # Return with a value.
                 typ = get_proper_type(self.expr_checker.accept(
                     s.expr, return_type, allow_none_return=allow_none_func_call))
+
+                # Check refinement types
+                self.vc_binder.check_subsumption(s.expr, typ, return_type, ctx=s)
+
+                # Now we invalidate all the refinement variables after checking
+                self.vc_binder.invalidate_vars_in_expr(s.expr)
 
                 if defn.is_async_generator:
                     self.fail(message_registry.RETURN_IN_ASYNC_GENERATOR, s)
@@ -3510,6 +3519,9 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
                 if isinstance(return_type, (NoneType, AnyType)):
                     return
+
+                # Check refinement types
+                self.vc_binder.check_subsumption(None, None, return_type, ctx=s)
 
                 if self.in_checked_function():
                     self.fail(message_registry.RETURN_VALUE_EXPECTED, s)

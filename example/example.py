@@ -26,14 +26,14 @@ class Container:
         self.value = value
 
 
-def test_literal() -> Annotated[int, A, A > 1]:
-    return 2
+def test_literal() -> Annotated[int, A, A > 5]:
+    return 9
 
 
 def test_tuple(
         m1: Annotated[array, V, V.shape == (1, 1)],
         m2: Annotated[array, A, A.shape == (2, 2)]
-        ) -> Annotated[array, B, B.shape == (2, 2)]:
+) -> Annotated[array, B, B.shape == (2, 2)]:
     return m2
 
 
@@ -49,6 +49,29 @@ def test_assignment(
     a: Annotated[int, B, B > 3] = v.shape[1]
     b = a
     return b
+
+
+def test_call_returns() -> Annotated[int, A, A > 0]:
+    a: Annotated[int, V, V > 3] = test_literal()
+    print(a)
+    return test_literal()
+
+
+def dummy_call1(v: Annotated[int, V, V > 5]) -> Annotated[int, B, B > 4]:
+    return v
+
+
+def dummy_call2(m: Annotated[int, A, A > 7]) -> Annotated[int, B, B > 6]:
+    return m
+
+
+def test_call_args(m: Annotated[int, V, V > 9]) -> Annotated[int, A, A > 0]:
+    other: Annotated[int, Y, Y > 8] = 9
+    a: Annotated[int, B, B > 3] = dummy_call1(dummy_call2(8))
+    b: Annotated[int, C, C > 3] = other
+    c: Annotated[int, X, X > 3] = m
+    print(b, c)
+    return a
 
 
 # Should have failures.

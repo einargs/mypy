@@ -404,8 +404,6 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
 
             root.refinements = RefinementInfo(local_var, constraints)
 
-            print("refinement type", root)
-
             return root
         elif fullname in ('typing_extensions.Required', 'typing.Required'):
             if not self.allow_required:

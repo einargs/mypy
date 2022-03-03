@@ -16,7 +16,7 @@ We need to be able to refine:
 - tuples of ints, both of any arity and specific arity
 - ints
 - None
-- maybe: bools (so that we understand not)
+- maybe: bools (so that they can be used for refined predicates)
 
 ## VC Generation
 For VC generation, the way it will work is that I'll have a binder that has a
@@ -33,6 +33,27 @@ checking. UPDATE: Actually, meta variables will just never be invalidated.
 Entering a new function scope should put vc conditons on a stack (probably using
 `@contextmanager`).
 
+## Refinement variable substitution in return types
+In order to get correctly substituted return types, why don't I just modify the
+returned type in the expr checker? The question is how to substitute for actual
+refinement types...
+
+Okay, so I've developed a trick where `BaseType`s can have a verification
+variable added to them. This is used to allow me to directly
+
+## Refinement Tags
+This would act as a crude version of term-level function predicates.
+
+```python
+IsCat = RefinementTag('IsCat')
+
+def is_cat(
+    m: Annotated[Tensor, V, ...]
+) -> Annotated[bool, B, after, Implies(B,
+IsCat(V))]:
+    ...
+```
+
 # TODO
 - enable assignment to variables
   * invalidate verification vars that are assigned to
@@ -43,9 +64,15 @@ Entering a new function scope should put vc conditons on a stack (probably using
   * currently I don't think this can handle adding refinement type info to
     indexed lvalues.
 - enable calling functions with refinement types
-- get destructuring a tuple working
 - make sure that return values of refined functions that are assigned to
   variables have refined types inferred.
+- arithmetic operations in refinement annotations
+- expand the passing of verification variables attached to types inside
+  `ExprChecker` to also do the constraint generation for integer literals.
+  Possibly even set it up to do it for `RealVar`s. This will make stuff like
+  generating constraints for arithmetic operations or comparisons easier.
+- Refinement tags
+- get destructuring a tuple working
 - add predicate/control flow based refinement
 - write tests? Maybe
 - design and implement the after condition stuff

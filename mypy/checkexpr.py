@@ -20,7 +20,7 @@ from mypy.types import (
     PartialType, DeletedType, UninhabitedType, TypeType, TypeOfAny, LiteralType, LiteralValue,
     is_named_instance, FunctionLike, ParamSpecType, ParamSpecFlavor,
     StarType, is_optional, remove_optional, is_generic_instance, get_proper_type, ProperType,
-    get_proper_types, flatten_nested_unions, LITERAL_TYPE_NAMES,
+    get_proper_types, flatten_nested_unions, LITERAL_TYPE_NAMES, BaseType,
 )
 from mypy.nodes import (
     NameExpr, RefExpr, Var, FuncDef, OverloadedFuncDef, TypeInfo, CallExpr,
@@ -65,6 +65,7 @@ from mypy.plugin import (
     MethodContext, MethodSigContext,
     FunctionContext, FunctionSigContext,
 )
+from mypy.vcbinder import is_refined_type
 from mypy.typeops import (
     try_expanding_sum_type_to_union, tuple_fallback, make_simplified_union,
     true_only, false_only, erase_to_union_or_bound, function_type,
@@ -85,7 +86,7 @@ ArgChecker: _TypeAlias = Callable[[
         int,
         CallableType,
         Optional[Type],
-        Context,
+        Expression,
         Context,
         MessageBuilder,
     ],
@@ -198,9 +199,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         return self.narrow_type_from_binder(e, result)
 
     def analyze_ref_expr(self, e: RefExpr, lvalue: bool = False) -> Type:
-        # This covers NameExpr and MemberExpr
-        self.chk.vc_binder.invalidate_expr(e)
-
         result: Optional[Type] = None
         node = e.node
 
@@ -1055,8 +1053,8 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         self.check_argument_count(callee, arg_types, arg_kinds,
                                   arg_names, formal_to_actual, context, self.msg)
 
-        self.check_argument_types(arg_types, arg_kinds, args, callee, formal_to_actual, context,
-                                  messages=arg_messages, object_type=object_type)
+        arg_info = self.check_argument_types(arg_types, arg_kinds, args, callee,
+                formal_to_actual, context, messages=arg_messages, object_type=object_type)
 
         if (callee.is_type_obj() and (len(arg_types) == 1)
                 and is_equivalent(callee.ret_type, self.named_type('builtins.type'))):
@@ -1074,7 +1072,26 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 callee, arg_kinds, arg_types, arg_names, formal_to_actual, args,
                 callable_name, object_type, context)
             callee = callee.copy_modified(ret_type=new_ret_type)
-        return callee.ret_type, callee
+
+        # Here we perform substitution for the return type.
+        if is_refined_type(callee.ret_type):
+            print("formal_to_actual", formal_to_actual)
+            print("arg_info", arg_info)
+            bindings: list[Tuple[str, Expression, Type]] = []
+            for arg_expr, arg_type, expected_type in arg_info:
+                if is_refined_type(expected_type) and expected_type.refinements.var is not None:
+                    # we assume that it passes types; check_arg does the
+                    # actual type checking.
+                    bindings.append((expected_type.refinements.var.name,
+                        arg_expr, arg_type))
+            ret_var = self.chk.vc_binder.var_for_call_expr(
+                    callee.ret_type, bindings, ctx=context)
+            assert ret_var is not None, ("is_refined_type checks to make sure "
+                "callee.refinements is not None, which is would cause this "
+                "to be None.")
+            return callee.ret_type.copy_with_vc_var(ret_var), callee
+        else:
+            return callee.ret_type, callee
 
     def analyze_type_type_callee(self, item: ProperType, context: Context) -> Type:
         """Analyze the callee X in X(...) where X is Type[item].
@@ -1501,7 +1518,8 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                              context: Context,
                              messages: Optional[MessageBuilder] = None,
                              check_arg: Optional[ArgChecker] = None,
-                             object_type: Optional[Type] = None) -> None:
+                             object_type: Optional[Type] = None
+                             ) -> list[tuple[Expression, Type, Type]]:
         """Check argument types against a callable type.
 
         Report errors if the argument types are not compatible.
@@ -1512,6 +1530,8 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         check_arg = check_arg or self.check_arg
         # Keep track of consumed tuple *arg items.
         mapper = ArgTypeExpander(self.argument_infer_context())
+        # here we make a list for use in the refinement variable substitution.
+        arg_info: list[tuple[Expression, Type, Type]] = []
         for i, actuals in enumerate(formal_to_actual):
             for actual in actuals:
                 actual_type = arg_types[actual]
@@ -1529,9 +1549,11 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 expanded_actual = mapper.expand_actual_type(
                     actual_type, actual_kind,
                     callee.arg_names[i], callee.arg_kinds[i])
+                arg_info.append((args[actual], expanded_actual, callee.arg_types[i]))
                 check_arg(expanded_actual, actual_type, arg_kinds[actual],
                           callee.arg_types[i],
                           actual + 1, i + 1, callee, object_type, args[actual], context, messages)
+        return arg_info
 
     def check_arg(self,
                   caller_type: Type,
@@ -1542,10 +1564,11 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                   m: int,
                   callee: CallableType,
                   object_type: Optional[Type],
-                  context: Context,
+                  arg_expr: Expression,
                   outer_context: Context,
                   messages: MessageBuilder) -> None:
         """Check the type of a single argument in a call."""
+        context = arg_expr
         caller_type = get_proper_type(caller_type)
         original_caller_type = get_proper_type(original_caller_type)
         callee_type = get_proper_type(callee_type)
@@ -1559,7 +1582,11 @@ class ExpressionChecker(ExpressionVisitor[Type]):
               isinstance(callee_type.item, Instance) and
               (callee_type.item.type.is_abstract or callee_type.item.type.is_protocol)):
             self.msg.concrete_only_call(callee_type, context)
-        elif not is_subtype(caller_type, callee_type):
+        elif is_subtype(caller_type, callee_type):
+            # Here we check refinement types if the standard typing is correct.
+            self.chk.vc_binder.check_subsumption(arg_expr,
+                    caller_type, callee_type, ctx=arg_expr)
+        else:
             if self.chk.should_suppress_optional_error([caller_type, callee_type]):
                 return
             code = messages.incompatible_argument(n,
@@ -2086,7 +2113,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
     def visit_member_expr(self, e: MemberExpr, is_lvalue: bool = False) -> Type:
         """Visit member expression (of form e.id)."""
-        self.chk.vc_binder.invalidate_expr(e)
         self.chk.module_refs.update(extract_refexpr_names(e))
         result = self.analyze_ordinary_member_access(e, is_lvalue)
         return self.narrow_type_from_binder(e, result)
@@ -2937,9 +2963,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
         It may also represent type application.
         """
-        # invalidate associated refinement constraints for this
-        self.chk.vc_binder.invalidate_expr(e)
-
         result = self.visit_index_expr_helper(e)
         result = get_proper_type(self.narrow_type_from_binder(e, result))
         if (self.is_literal_context() and isinstance(result, Instance)
