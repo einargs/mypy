@@ -90,6 +90,7 @@ typecheck_files = [
     'check-reports.test',
     'check-errorcodes.test',
     'check-annotated.test',
+    'check-refinement.test',
     'check-parameter-specification.test',
     'check-generic-alias.test',
     'check-typeguard.test',

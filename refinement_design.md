@@ -1,8 +1,16 @@
 # Testing
-Use the below code to run the modified mypy on the example file.
+Use the command below to run the modified mypy on the example file.
 
 ```bash
 python3 -m mypy example/example.py --no-incremental --show-traceback
+```
+
+Use the command below to run the refinement type specific tests. Currently since
+I'm assuming that all annotations are refinement types, the annotation tests are
+all broken.
+
+```bash
+pytest -n0 -k "check-refinement.test"
 ```
 
 # Refinement Design
@@ -17,6 +25,7 @@ We need to be able to refine:
 - ints
 - None
 - maybe: bools (so that they can be used for refined predicates)
+
 
 ## VC Generation
 For VC generation, the way it will work is that I'll have a binder that has a
@@ -64,17 +73,27 @@ IsCat(V))]:
   * currently I don't think this can handle adding refinement type info to
     indexed lvalues.
 - enable calling functions with refinement types
+- I need to prefix the refinement variables with the module they're defined in.
 - make sure that return values of refined functions that are assigned to
   variables have refined types inferred.
+- There's the possiblity for some cool interaction between refinements and
+  the type of any length tuples, where refining them by equality or length could
+  allow me to narrow the base type.
 - arithmetic operations in refinement annotations
 - expand the passing of verification variables attached to types inside
   `ExprChecker` to also do the constraint generation for integer literals.
   Possibly even set it up to do it for `RealVar`s. This will make stuff like
   generating constraints for arithmetic operations or comparisons easier.
 - Refinement tags
+- consider setting stuff up to automatically infer member equalities based on
+  the values passed into constructors. So knowing that `a = Container(value=1)`
+  means that `a.shape == 1`. I think this can maybe be done with just post
+  conditions?
+- get tuple literals working
 - get destructuring a tuple working
 - add predicate/control flow based refinement
-- write tests? Maybe
+- debug tools to, e.g., show all constraints relevant to a refinement variable
+  or term variable. Also, tools to check the validity of a condition inline.
 - design and implement the after condition stuff
 - show an error if you use a variable when refining a value of type `None`. More
   generally this is about actually type checking the constraints on refinement

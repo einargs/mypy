@@ -1,0 +1,173 @@
+[case testRefinementLiteral]
+from typing_extensions import Annotated
+from refinement import *
+def f0() -> Annotated[int, A, A > 5]:
+    return 9
+reveal_type(f0)  # N: Revealed type is "def () -> builtins.int{A: A > 5}"
+
+def f1() -> Annotated[int, A, A > 5]:
+    return 3  # E: refinement type check failed
+reveal_type(f1)  # N: Revealed type is "def () -> builtins.int{A: A > 5}"
+
+a: Annotated[int, V, V > 5] = 9
+reveal_type(a)  # N: Revealed type is "builtins.int{V: V > 5}"
+
+b: Annotated[int, A, A > 5] = 4  # E: refinement type check failed
+reveal_type(b)  # N: Revealed type is "builtins.int{A: A > 5}"
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementVariableOverlap]
+from typing_extensions import Annotated
+from refinement import *
+a: Annotated[int, V, V > 5] = 9
+b: Annotated[int, V, V > 5] = 9  # E: Tried to bind already bound refinement variable "V"
+
+def f0(a: Annotated[int, V, V > 5], b: Annotated[int, V, V < 8]) -> None:  # E: Tried to bind already bound refinement variable "V"
+    return None
+
+# I think this should be fine
+def f1(a: Annotated[int, V, V > 5]) -> Annotated[int, V, V > 3]:
+    return a
+
+def f2(a: Annotated[int, V, V > 5]) -> Annotated[int, V, V > 3]:
+    b: Annotated[int, A, A > 7] = 10
+    return b
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementMember]
+from typing_extensions import Annotated
+from refinement import *
+class Container:
+    def __init__(self, value: int):
+        self.value = value
+
+def f0(c: Annotated[Container, A, A.value > 5]) -> Annotated[int, B, B > 4]:
+    return c.value
+reveal_type(f0)  # N: Revealed type is "def (c: __main__.Container{A: A.value > 5}) -> builtins.int{B: B > 4}"
+
+def f1(c: Annotated[Container, A, A.value > 5]) -> Annotated[int, B, B > 4]:
+    a: Annotated[Container, C, C.value > 6] = c  # E: refinement type check failed
+    return a.value
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementTuple]
+from typing import Tuple
+from typing_extensions import Annotated
+from refinement import *
+
+# TODO
+a: Annotated[Tuple[int, int], A, A == (1, 1)] = (1, 1)  # E: Tuple expressions are not yet implemented
+
+def f0(m: Annotated[Tuple[int, int], V, V == (5, 1)]) -> Annotated[int, A, A > 3]:
+    return m[0]
+
+def f1(
+    m: Annotated[Tuple[int, int], V, V == (5, 1)]
+) -> Annotated[int, A, A > 3]:
+    return m[1]  # E: refinement type check failed
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementMemberTuple]
+from typing import Tuple
+from typing_extensions import Annotated
+from refinement import *
+class array:
+    shape: Tuple[int, ...]
+
+def f0(
+        m1: Annotated[array, V, V.shape == (1, 1)],
+        m2: Annotated[array, A, A.shape == (2, 2)]
+) -> Annotated[array, B, B.shape == (2, 2)]:
+    return m2
+reveal_type(f0)  # N: Revealed type is "def (m1: __main__.array{V: V.shape == (1, 1)}, m2: __main__.array{A: A.shape == (2, 2)}) -> __main__.array{B: B.shape == (2, 2)}"
+
+def f1(
+        m1: Annotated[array, V, V.shape == (1, 1)],
+        m2: Annotated[array, A, A.shape == (2, 2)]
+) -> Annotated[array, B, B.shape == (2, 2)]:
+    return m1  # E: refinement type check failed
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementComplexAssignment]
+from typing import Tuple
+from typing_extensions import Annotated
+from refinement import *
+class array:
+    shape: Tuple[int, ...]
+
+def f0(
+    v: Annotated[array, V, V.shape == (1, 5)]
+) -> Annotated[int, A, A > 0]:
+    a: Annotated[int, B, B > 3] = v.shape[1]
+    b = a
+
+    c: Annotated[int, C, C > 4] = v.shape[1]  # E: refinement type check failed
+    d: Annotated[int, X, X > 1] = a  # E: refinement type check failed
+    e = d
+    # f type checks even though d doesn't, because the errors are isolated.
+    f: Annotated[int, Y, Y > 0] = e
+
+    return v.shape[0]
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementFloatingVars]
+from typing import Tuple
+from typing_extensions import Annotated
+from refinement import *
+
+class array:
+    shape: Tuple[int, ...]
+
+L = RefinementVar('L')
+M = RefinementVar('M')
+N = RefinementVar('N')
+
+def f0(
+        m1: Annotated[array, A, A.shape == (X, Y)],
+        m2: Annotated[array, B, B.shape == (Y, Z)],
+        m3: Annotated[array, C, C.shape == (X, Z)]
+) -> Annotated[int, V, V == Y]:
+    tup: Annotated[Tuple[int, ...], L, L == (X, Z)] = m3.shape
+    m: Annotated[int, M, M == Y] = m1.shape[1]
+    n: Annotated[int, N, N == Z] = tup[1]
+    return m2.shape[0]
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementAdditionExprs]
+from typing_extensions import Annotated
+from refinement import *
+
+a: Annotated[int, A, A > 5] = 1 + 5  # E: could not type check expression against "builtins.int{A: A > 5}"
+b: Annotated[int, B, B > 6] = a + 1  # E: could not type check expression against "builtins.int{B: B > 6}"
+
+[builtins fixtures/primitives.pyi]
+
+[case testRefinementCalls]
+from typing_extensions import Annotated
+from refinement import *
+
+def over5() -> Annotated[int, A, A > 5]:
+    return 9
+
+def over10() -> Annotated[int, A, A > 10]:
+    return 11
+
+def test_no_args() -> Annotated[int, A, A > 0]:
+    a: Annotated[int, V, V > 3] = over5()
+    return over5()
+
+def f0(v: Annotated[int, V, V > 5]) -> Annotated[int, B, B > 4]:
+    return v
+
+def f1(m: Annotated[int, A, A > 7]) -> Annotated[int, B, B > 6]:
+    return m
+
+def test_call_args(m: Annotated[int, V, V > 9]) -> Annotated[int, A, A > 0]:
+    other: Annotated[int, Y, Y > 8] = 9
+    d: Annotated[int, Z, Z > 3] = f0(f1(8))
+    a: Annotated[int, B, B > 3] = f0(f1(over10()))
+    b: Annotated[int, C, C > 3] = other
+    c: Annotated[int, X, X > 3] = m
+    return a
+
+[builtins fixtures/tuple.pyi]

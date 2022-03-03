@@ -202,7 +202,7 @@ class VerificationBinder:
         # This will contain all of the constraints on smt variables.
         self.constraints: list[SMTConstraint] = []
 
-        #
+        # This contains a list of all of the smt variables.
         self.smt_variables: list[SMTVar] = []
 
         # Maps variable names to the smt variables
@@ -215,6 +215,10 @@ class VerificationBinder:
 
         # Maps bound refinement variable names to term variables.
         self.bound_var_to_name: Dict[str, VerificationVar] = {}
+
+    def add_constraints(self, constraints: list[SMTConstraint]) -> None:
+        self.constraints += constraints
+        self.smt_solver.add(constraints)
 
     def fresh_verification_var(self) -> VerificationVar:
         self.next_id += 1
@@ -373,7 +377,7 @@ class VerificationBinder:
         if ref_var in self.bound_var_to_name:
             var = self.bound_var_to_name[ref_var]
             if var in self.var_versions:
-                self.fail("Tried to bind already bound refinement variable",
+                self.fail('Tried to bind already bound refinement variable "{}"'.format(ref_var),
                         context)
                 return
 
@@ -390,7 +394,7 @@ class VerificationBinder:
 
         for c in info.constraints:
             cons = self.translate_to_constraints(c, ctx=ctx)
-            self.constraints += cons
+            self.add_constraints(cons)
 
     def add_argument(self, arg_name: str, typ: Type, *, ctx: Context) -> None:
         var = RealVar(arg_name)
@@ -430,38 +434,41 @@ class VerificationBinder:
             for c in ret_type.refinements.constraints:
                 cons += self.translate_to_constraints(c, ctx=ctx)
             print("for", fresh_var, "constraints", cons)
-            self.constraints += cons
+            self.add_constraints(cons)
         return fresh_var
 
     def var_from_expr(
             self,
             expr: Expression,
             expr_type: Optional[Type]
-    ) -> Optional[VerificationVar]:
+    ) -> tuple[Optional[VerificationVar], bool]:
         """Convert an expression verification var with the appropriate
         constraints.
 
         This currently handles converting expressions to RealVars, integer
         literals, and call expressions.
+
+        This returns the optional verification var and a boolean that indicates
+        whether a specific error message has already been returned.
         """
         if isinstance(expr, IntExpr):
             fresh_var = self.fresh_verification_var()
             smt_var = self.get_smt_var(fresh_var)
-            self.constraints.append(smt_var == expr.value)
-            return fresh_var
+            self.add_constraints([smt_var == expr.value])
+            return fresh_var, False
         elif isinstance(expr, CallExpr):
             assert expr_type is not None, "I don't think this should happen?"
 
             if is_refined_type(expr_type) and expr_type.refinements is not None:
                 print("call vc_var", expr_type.refinements.verification_var)
-                return expr_type.refinements.verification_var
+                return expr_type.refinements.verification_var, False
             else:
-                return None
-            # fresh_var = self.fresh_verification_var()
-            # TODO: I'm going to have to change this up when this refers to
-            # refinement variables that are passed in.
+                return None, False
+        elif isinstance(expr, TupleExpr):
+            self.fail("Tuple expressions are not yet implemented", expr)
+            return None, True
         else:
-            return to_real_var(expr)
+            return to_real_var(expr), False
 
     def check_implication(self, constraints: list[SMTConstraint]) -> bool:
         """Checks if the given constraints are implied by already known
@@ -469,14 +476,19 @@ class VerificationBinder:
 
         Returns false if the implication is not satisfiable.
         """
-        variables = self.smt_variables
-        print("Variables:", variables)
+
+        # print("Variables:", self.smt_variables)
         print("Given:", self.constraints)
         print("Goal:", constraints)
-        cond = z3.ForAll(variables,
-                z3.Implies(z3.And(self.constraints), z3.And(constraints)))
-        # print("Condition:", cond)
-        return self.smt_solver.check(cond) == z3.sat
+
+        # Basically, in order to prove that the constraints are "valid" --
+        # evaluates to true for all possible variable values -- we put a not
+        # around the condition and then check that conditions is unsatisfiable
+        # -- that we have no way it can be *untrue*.
+        cond = z3.Not(z3.And(constraints))
+        result = self.smt_solver.check(cond)
+        print("Result:", "valid" if result == z3.unsat else "invalid")
+        return result == z3.unsat
 
     def check_subsumption(self,
             expr: Optional[Expression],
@@ -514,15 +526,13 @@ class VerificationBinder:
                     for c in info.constraints
                     for smt_c in self.translate_to_constraints(c, ctx=ctx)]
             if not self.check_implication(constraints):
-                self.fail(FAIL_MSG, target)
-                print("type check failed")
+                self.fail(FAIL_MSG, ctx)
             return
         else:
-            var = self.var_from_expr(expr, expr_type)
+            var, has_sent_error = self.var_from_expr(expr, expr_type)
             if var is None:
-                print("could not type check...", expr, "against", target)
-                self.fail("could not type check expression against "
-                    "refinement type", target)
+                if not has_sent_error:
+                    self.fail('could not type check expression against "{}"'.format(target), ctx)
                 return
             print("var binding", info.var.name, "to", var)
             with self.var_binding(info.var.name, var):
@@ -530,8 +540,7 @@ class VerificationBinder:
                         for c in info.constraints
                         for smt_c in self.translate_to_constraints(c, ctx=ctx)]
                 if not self.check_implication(constraints):
-                    self.fail(FAIL_MSG, target)
-                    print("type check failed")
+                    self.fail(FAIL_MSG, ctx)
                 return
 
 
