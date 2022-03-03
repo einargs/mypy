@@ -532,7 +532,7 @@ class VerificationBinder:
             var, has_sent_error = self.var_from_expr(expr, expr_type)
             if var is None:
                 if not has_sent_error:
-                    self.fail('could not type check expression against "{}"'.format(target), ctx)
+                    self.fail('could not understand expression', ctx)
                 return
             print("var binding", info.var.name, "to", var)
             with self.var_binding(info.var.name, var):

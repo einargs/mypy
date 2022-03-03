@@ -137,8 +137,8 @@ def f0(
 from typing_extensions import Annotated
 from refinement import *
 
-a: Annotated[int, A, A > 5] = 1 + 5  # E: could not type check expression against "builtins.int{A: A > 5}"
-b: Annotated[int, B, B > 6] = a + 1  # E: could not type check expression against "builtins.int{B: B > 6}"
+a: Annotated[int, A, A > 5] = 1 + 5  # E: could not understand expression
+b: Annotated[int, B, B > 6] = a + 1  # E: could not understand expression
 
 [builtins fixtures/primitives.pyi]
 
@@ -162,12 +162,18 @@ def f0(v: Annotated[int, V, V > 5]) -> Annotated[int, B, B > 4]:
 def f1(m: Annotated[int, A, A > 7]) -> Annotated[int, B, B > 6]:
     return m
 
+def f2(
+    a: Annotated[int, A, A > 1], b: Annotated[int, B, B > 3]
+) -> Annotated[int, C, C > 3]:
+    return b
+
 def test_call_args(m: Annotated[int, V, V > 9]) -> Annotated[int, A, A > 0]:
     other: Annotated[int, Y, Y > 8] = 9
     d: Annotated[int, Z, Z > 3] = f0(f1(8))
     a: Annotated[int, B, B > 3] = f0(f1(over10()))
-    b: Annotated[int, C, C > 3] = other
-    c: Annotated[int, X, X > 3] = m
+    b: Annotated[int, C, C > 3] = f2(m, other)
+    # TODO: give specific type error in regards to `m` being invalid maybe?
+    c: Annotated[int, X, X > 3] = m  # E: refinement type check failed
     return a
 
 [builtins fixtures/tuple.pyi]
