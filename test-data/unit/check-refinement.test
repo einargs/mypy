@@ -177,3 +177,80 @@ def test_call_args(m: Annotated[int, V, V > 9]) -> Annotated[int, A, A > 0]:
     return a
 
 [builtins fixtures/tuple.pyi]
+
+[case testRefinementExprStmt]
+from typing_extensions import Annotated
+from refinement import *
+
+def f(i: Annotated[int, A, A > 5]) -> None:
+    return None
+
+f(1)  # E: refinement type check failed
+
+f(8)
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementEmptyConstraints]
+from typing_extensions import Annotated
+from refinement import *
+
+a: Annotated[int, C] = 1
+
+def f0(i: Annotated[int, A]) -> None:
+    return None
+
+f0(1)
+
+def f1(i: Annotated[int, B]) -> Annotated[int, X, X == 5]:
+    return 5
+
+k: Annotated[int, V, V == 5] = f1(6)
+
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementCallSubstitution]
+from typing_extensions import Annotated
+from refinement import *
+
+def eq_arg(i: Annotated[int, A]) -> Annotated[int, B, B == A]:
+    return i
+
+a: Annotated[int, C, C == 5] = eq_arg(5)
+b = eq_arg(5)
+
+reveal_type(b)  # N: Revealed type is "builtins.int{B: B == 5}"
+reveal_type(eq_arg(5))  # N: Revealed type is "builtins.int{B: B == 5}"
+
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementVarMutation]
+from typing_extensions import Annotated
+from refinement import *
+
+a: Annotated[int, A, A > 5] = 6
+a = 7
+a = 3  # E: refinement type check failed
+
+[builtins fixtures/tuple.pyi]
+
+[case testRefinementMembers]
+from typing_extensions import Annotated
+from refinement import *
+
+class Test:
+    def __init__(self, i: Annotated[int, A, A > 5]):
+        self.i = i
+
+    def over4(self) -> Annotated[int, B, B > 4]:
+        return self.i
+
+    def __call__(self, i: Annotated[int, B, B < 20]) -> Annotated[int, C, C > 3]:
+        return self.i
+
+test0 = Test(3)  # E: refinement type check failed
+test1 = Test(8)
+
+test1(24)  # E: refinement type check failed
+test1(19)
+
+[builtins fixtures/tuple.pyi]

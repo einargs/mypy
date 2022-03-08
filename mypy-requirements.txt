@@ -2,5 +2,4 @@ typing_extensions>=3.10
 mypy_extensions>=0.4.3
 typed_ast>=1.4.0,<2; python_version<'3.8'
 tomli>=1.1.0
-z3-solver
-torch
+z3-solver>=4.8.14.0

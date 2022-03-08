@@ -5,6 +5,21 @@ class RefinementLoc:
     def __eq__(self, other):
         return RefinementConstraint(self, other)
 
+    def __ne__(self, other):
+        return RefinementConstraint(self, other)
+    
+    def __lt__(self, other):
+        return RefinementConstraint(self, other)
+    
+    def __le__(self, other):
+        return RefinementConstraint(self, other)
+    
+    def __gt__(self, other):
+        return RefinementConstraint(self, other)
+    
+    def __ge__(self, other):
+        return RefinementConstraint(self, other)
+
     def __contains__(self, item):
         return None
 

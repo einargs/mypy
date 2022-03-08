@@ -15,13 +15,13 @@ import mypy.nodes
 from mypy import state
 from mypy.nodes import (
     INVARIANT, SymbolNode, FuncDef,
-    ArgKind, ARG_POS, ARG_STAR, ARG_STAR2,
+    ArgKind, ARG_POS, ARG_STAR, ARG_STAR2, Expression, IntExpr,
 )
 from mypy.util import IdMapper
 from mypy.bogus_type import Bogus
 
 if TYPE_CHECKING:
-    from mypy.vcbinder import FreshVar
+    from mypy.vcbinder import VerificationVar
 
 T = TypeVar('T')
 
@@ -392,6 +392,10 @@ class ProperType(Type):
 class RefinementExpr:
     __slots__ = ()
 
+    def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
+        return self
+
+    @abstractmethod
     def serialize(self) -> Union[JsonDict, str]:
         raise NotImplementedError('Cannot serialize {} instance'.format(self.__class__.__name__))
 
@@ -461,6 +465,12 @@ class RefinementVar(RefinementExpr):
         self.name = name
         self.props = props
 
+    def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
+        for name, expr in bindings:
+            if name == self.name and self.props == [] and isinstance(expr, IntExpr):
+                return RefinementLiteral(expr.value)
+        return self
+
     def __eq__(self, other: Any) -> bool:
         if not isinstance(other, RefinementVar):
             raise NotImplementedError
@@ -507,6 +517,13 @@ class RefinementConstraint:
         self.kind = kind
         self.right = right
 
+    def substitute(
+            self, bindings: list[Tuple[str, Expression]]
+            ) -> 'RefinementConstraint':
+        left = self.left.substitute(bindings)
+        right = self.right.substitute(bindings)
+        return RefinementConstraint(left, self.kind, right)
+
     def serialize(self) -> JsonDict:
         return {'left': self.left.serialize(),
                 'kind': self.kind,
@@ -541,14 +558,14 @@ class RefinementInfo:
             self,
             var: Optional[RefinementVar],
             constraints: list[RefinementConstraint],
-            verification_var: Optional['FreshVar'] = None
+            verification_var: Optional['VerificationVar'] = None
             ):
         self.var = var
         self.constraints = constraints
         self.verification_var = verification_var
 
     def serialize(self) -> JsonDict:
-        return {'var': self.var.serialize(),
+        return {'var': self.var.serialize() if self.var else None,
                 'constraints': [c.serialize() for c in self.constraints],
                 }
 
@@ -559,8 +576,15 @@ class RefinementInfo:
                 RefinementVar.deserialize(data['var']),
                 [RefinementConstraint.deserialize(c) for c in data['constraints']])
 
-    def copy_with_vc_var(self, vc_var: 'FreshVar') -> 'RefinementInfo':
-        return RefinementInfo(self.var, self.constraints, vc_var)
+    def substitute(
+            self,
+            vc_var: 'VerificationVar',
+            bindings: Bogus[list[Tuple[str, Expression]]] = _dummy
+            ) -> 'RefinementInfo':
+        if bindings is _dummy:
+            bindings = []
+        constraints = [c.substitute(bindings) for c in self.constraints]
+        return RefinementInfo(self.var, constraints, vc_var)
 
 
 class BaseType(ProperType):
@@ -577,8 +601,8 @@ class BaseType(ProperType):
         super().__init__(line, column)
 
     @abstractmethod
-    def copy_with_vc_var(self, vc_var: 'FreshVar') -> 'BaseType':
-        pass
+    def copy_with_refinements(self, refinements: RefinementInfo) -> 'BaseType':
+        raise NotImplementedError
 
 
 class ConstraintSynType(ProperType):
@@ -1128,9 +1152,8 @@ class NoneType(BaseType):
         return NoneType(self.line, self.column,
                 self.refinements if refinements is _dummy else refinements)
 
-    def copy_with_vc_var(self, vc_var: 'FreshVar') -> 'NoneType':
-        return self.copy_modified(refinements=self.refinements
-                .copy_with_vc_var(vc_var))
+    def copy_with_refinements(self, refinements: RefinementInfo) -> 'NoneType':
+        return self.copy_modified(refinements=refinements)
 
 
 # NoneType used to be called NoneTyp so to avoid needlessly breaking
@@ -1340,9 +1363,8 @@ class Instance(BaseType):
             refinements if refinements is not _dummy else self.refinements
         )
 
-    def copy_with_vc_var(self, vc_var: 'FreshVar') -> 'Instance':
-        return self.copy_modified(refinements=self.refinements
-                .copy_with_vc_var(vc_var))
+    def copy_with_refinements(self, refinements: RefinementInfo) -> 'Instance':
+        return self.copy_modified(refinements=refinements)
 
     def has_readable_member(self, name: str) -> bool:
         return self.type.has_readable_member(name)
@@ -1895,9 +1917,8 @@ class TupleType(BaseType):
         return TupleType(items, fallback, self.line, self.column,
                 refinements=refinements)
 
-    def copy_with_vc_var(self, vc_var: 'FreshVar') -> 'TupleType':
-        return self.copy_modified(refinements=self.refinements
-                .copy_with_vc_var(vc_var))
+    def copy_with_refinements(self, refinements: RefinementInfo) -> 'TupleType':
+        return self.copy_modified(refinements=refinements)
 
     def slice(self, begin: Optional[int], end: Optional[int],
               stride: Optional[int]) -> 'TupleType':

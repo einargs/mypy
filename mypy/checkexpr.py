@@ -1075,21 +1075,24 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
         # Here we perform substitution for the return type.
         if is_refined_type(callee.ret_type):
+            assert callee.ret_type.refinements is not None
             print("formal_to_actual", formal_to_actual)
             print("arg_info", arg_info)
             bindings: list[Tuple[str, Expression, Type]] = []
             for arg_expr, arg_type, expected_type in arg_info:
-                if is_refined_type(expected_type) and expected_type.refinements.var is not None:
+                if (is_refined_type(expected_type)
+                        and expected_type.refinements
+                        and expected_type.refinements.var):
                     # we assume that it passes types; check_arg does the
                     # actual type checking.
                     bindings.append((expected_type.refinements.var.name,
                         arg_expr, arg_type))
             ret_var = self.chk.vc_binder.var_for_call_expr(
                     callee.ret_type, bindings, ctx=context)
-            assert ret_var is not None, ("is_refined_type checks to make sure "
-                "callee.refinements is not None, which is would cause this "
-                "to be None.")
-            return callee.ret_type.copy_with_vc_var(ret_var), callee
+            subst_bindings = [(name, expr) for (name, expr, _) in bindings]
+            ref_info = callee.ret_type.refinements.substitute(ret_var, subst_bindings)
+            ret_type = callee.ret_type.copy_with_refinements(ref_info)
+            return ret_type, callee
         else:
             return callee.ret_type, callee
 

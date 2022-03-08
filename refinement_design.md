@@ -64,14 +64,23 @@ IsCat(V))]:
 ```
 
 # TODO
+- Start using the type variable infrastructure to uniquely identify refinement
+  variables.
+  - This could help with e.g. one property referring to another property -- the
+    refinement variables would be unique'd so that if a second property is
+    brought in later, any constraints involving it on the first property snap
+    into place.
+- figure out when a variable with a refinement type can be invalidated.
+  Assignment shouldn't invalidate it bc then it'll be checked.
+  - I'm thinking
 - enable assignment to variables
-  * invalidate verification vars that are assigned to
   * Add variables with refinement types to things.
   * if the type of a variable is inferred and should be a refined type, make
     sure it is.
   * test multiple assignments
   * currently I don't think this can handle adding refinement type info to
     indexed lvalues.
+  * Get the ability to mutate variables working
 - enable calling functions with refinement types
 - I need to prefix the refinement variables with the module they're defined in.
 - make sure that return values of refined functions that are assigned to
@@ -102,6 +111,16 @@ IsCat(V))]:
 - inference of refinement types esp. for literals. This means taking `a = 1` and
   figuring out that the inferred type of `a` should be
   `Annotated[int, A, A == 1]`.
+
+## Needed tests
+- [ ] check invalidation of variables on:
+  - [ ] assignment
+  - [ ] use in an expression
+  - [ ] when a property is invalidated
+  - [ ] that a variable with a refined type is not invalidated by assignment
+        because that is checked.
+- [ ] test refinement variable uniqueness
+  - [ ] when inferring a new type from a return value.
 
 # Luke thoughts
 - See how much I can do without needing to add annotations

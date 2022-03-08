@@ -11,10 +11,11 @@ in
 
 mkShell {
   buildInputs = [
-    z3 ctags py
+    z3 ctags py gcc
   ];
 
   Z3_LIBRARY_PATH = "${z3.lib}/lib";
+  LD_LIBRARY_PATH = "${lib.makeLibraryPath [stdenv.cc.cc]}";
 
   shellHook = ''
     python3 -m venv ./env

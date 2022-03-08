@@ -199,6 +199,7 @@ setup(name='mypy',
                         'typing_extensions>=3.10',
                         'mypy_extensions >= 0.4.3',
                         'tomli>=1.1.0',
+                        'z3-solver>=4.8.14.0'
                         ],
       # Same here.
       extras_require={

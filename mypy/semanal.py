@@ -3101,7 +3101,6 @@ class SemanticAnalyzer(NodeVisitor[None],
             return False
 
         name = lvalue.name
-        print("RefinementVar fullname", lvalue.fullname)
         if not self.check_typevarlike_name(call, name, s):
             return False
 

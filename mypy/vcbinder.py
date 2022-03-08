@@ -220,7 +220,7 @@ class VerificationBinder:
         self.constraints += constraints
         self.smt_solver.add(constraints)
 
-    def fresh_verification_var(self) -> VerificationVar:
+    def fresh_verification_var(self) -> FreshVar:
         self.next_id += 1
         return FreshVar(self.next_id)
 
@@ -275,11 +275,13 @@ class VerificationBinder:
             assert False, "Should not be passed"
 
     @contextmanager
-    def var_binding(self, ref_var: str, term_var: VerificationVar) -> Iterator[None]:
+    def var_binding(self, ref_var: Optional[str], term_var: VerificationVar) -> Iterator[None]:
         """Temporary binds a refinement variable to a given base term
         variable.
         """
-        if ref_var in self.bound_var_to_name:
+        if ref_var is None:
+            yield None
+        elif ref_var in self.bound_var_to_name:
             old = self.bound_var_to_name[ref_var]
             self.bound_var_to_name[ref_var] = term_var
             yield None
@@ -414,14 +416,13 @@ class VerificationBinder:
             ret_type: BaseType,
             bindings: list[Tuple[str, Expression, Type]],
             ctx: Context
-    ) -> Optional[VerificationVar]:
-        if ret_type.refinements is None:
-            return None
+    ) -> VerificationVar:
+        assert ret_type.refinements is not None
 
         fresh_var = self.fresh_verification_var()
         var_bindings: list[tuple[str, VerificationVar]] = []
         for ref_var, expr, expr_type in bindings:
-            expr_var = self.var_from_expr(expr, expr_type)
+            expr_var, was_error = self.var_from_expr(expr, expr_type)
             if expr_var is not None:
                 var_bindings.append((ref_var, expr_var))
         # TODO: I think I need to generalize the idea of a bound variable,
@@ -433,7 +434,6 @@ class VerificationBinder:
             cons = []
             for c in ret_type.refinements.constraints:
                 cons += self.translate_to_constraints(c, ctx=ctx)
-            print("for", fresh_var, "constraints", cons)
             self.add_constraints(cons)
         return fresh_var
 
@@ -460,7 +460,6 @@ class VerificationBinder:
             assert expr_type is not None, "I don't think this should happen?"
 
             if is_refined_type(expr_type) and expr_type.refinements is not None:
-                print("call vc_var", expr_type.refinements.verification_var)
                 return expr_type.refinements.verification_var, False
             else:
                 return None, False
@@ -468,7 +467,28 @@ class VerificationBinder:
             self.fail("Tuple expressions are not yet implemented", expr)
             return None, True
         else:
-            return to_real_var(expr), False
+            var = to_real_var(expr)
+            # TODO: how do I deal with other variables mentioned in this, e.g.,
+            # other properties of an object? Thinking about it maybe uniquing
+            # the refinement variables in semantic analysis would help with
+            # that. That way refinement variables would know they're talking
+            # about the other properties when those come in...
+
+            # TODO check that other stuff doesn't somehow get added before type
+            # constraints can be added.
+            if is_refined_type(expr_type) and var not in self.var_versions:
+                assert expr_type.refinements, "guarenteed by is_refined_type"
+                if expr_type.refinements.var is None:
+                    ref_var = None
+                else:
+                    ref_var = expr_type.refinements.var.name
+
+                with self.var_binding(ref_var, var):
+                    for c in expr_type.refinements.constraints:
+                        cons = self.translate_to_constraints(c, ctx=expr)
+                        self.add_constraints(cons)
+
+            return var, False
 
     def check_implication(self, constraints: list[SMTConstraint]) -> bool:
         """Checks if the given constraints are implied by already known
@@ -477,7 +497,11 @@ class VerificationBinder:
         Returns false if the implication is not satisfiable.
         """
 
-        # print("Variables:", self.smt_variables)
+        # If there are no constraints to be checked it is defacto true.
+        if constraints == []:
+            return True
+
+        print("Variables:", self.smt_variables)
         print("Given:", self.constraints)
         print("Goal:", constraints)
 
@@ -487,7 +511,7 @@ class VerificationBinder:
         # -- that we have no way it can be *untrue*.
         cond = z3.Not(z3.And(constraints))
         result = self.smt_solver.check(cond)
-        print("Result:", "valid" if result == z3.unsat else "invalid")
+        # print("Result:", "valid" if result == z3.unsat else "invalid")
         return result == z3.unsat
 
     def check_subsumption(self,
@@ -575,7 +599,7 @@ class Invalidator(ExpressionVisitor[None]):
         return None
 
     def visit_star_expr(self, e: StarExpr) -> None:
-        e.accept(self)
+        e.expr.accept(self)
 
     def visit_name_expr(self, e: NameExpr) -> None:
         self.invalidate(e)
@@ -646,7 +670,8 @@ class Invalidator(ExpressionVisitor[None]):
         e.expr.accept(self)
 
     def visit_yield_expr(self, e: YieldExpr) -> None:
-        e.expr.accept(self)
+        if e.expr is not None:
+            e.expr.accept(self)
 
     def visit_reveal_expr(self, e: RevealExpr) -> None:
         return None
@@ -658,7 +683,7 @@ class Invalidator(ExpressionVisitor[None]):
         return None
 
     def visit_lambda_expr(self, e: LambdaExpr) -> None:
-        e.expr.accept(self)
+        e.expr().accept(self)
 
     # TODO: right now we're just ignoring generator stuff, so
     # in the future I should implement that if needed.
