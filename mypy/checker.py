@@ -3431,6 +3431,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
     def visit_expression_stmt(self, s: ExpressionStmt) -> None:
         self.expr_checker.accept(s.expr, allow_none_return=True, always_allow_any=True)
+        self.vc_binder.invalidate_vars_in_expr(s.expr)
 
     def visit_return_stmt(self, s: ReturnStmt) -> None:
         """Type check a return statement."""

@@ -1076,8 +1076,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         # Here we perform substitution for the return type.
         if is_refined_type(callee.ret_type):
             assert callee.ret_type.refinements is not None
-            print("formal_to_actual", formal_to_actual)
-            print("arg_info", arg_info)
             bindings: list[Tuple[str, Expression, Type]] = []
             for arg_expr, arg_type, expected_type in arg_info:
                 if (is_refined_type(expected_type)

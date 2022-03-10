@@ -3,6 +3,7 @@
 import copy
 import sys
 from abc import abstractmethod
+import enum
 
 from typing import (
     Any, TypeVar, Dict, List, Tuple, cast, Set, Optional, Union, Iterable, NamedTuple,
@@ -495,23 +496,25 @@ class RefinementVar(RefinementExpr):
 RefinementValue: _TypeAlias = Union[RefinementVar, RefinementLiteral]
 
 
+class ConstraintKind(enum.Enum):
+    EQ = enum.auto()  # ==
+    NOT_EQ = enum.auto()  # !=
+    LT = enum.auto()  # <
+    LT_EQ = enum.auto()  # <=
+    GT = enum.auto()  # >
+    GT_EQ = enum.auto()  # >=
+
+
 class RefinementConstraint:
     """A constraint on a base type. Can constraint integers, tuples of integers,
     or properties that are integers of tuples of integers.
     """
 
-    EQ: ClassVar = 0  # ==
-    NOT_EQ: ClassVar = 1  # !=
-    LT: ClassVar = 2  # <
-    LT_EQ: ClassVar = 3  # <=
-    GT: ClassVar = 4  # >
-    GT_EQ: ClassVar = 5  # >=
-
     __slots__ = ('left', 'kind', 'right')
 
     def __init__(self,
             left: RefinementExpr,
-            kind: 'RefinementConstraintKind',
+            kind: ConstraintKind,
             right: RefinementExpr):
         self.left = left
         self.kind = kind
@@ -526,7 +529,7 @@ class RefinementConstraint:
 
     def serialize(self) -> JsonDict:
         return {'left': self.left.serialize(),
-                'kind': self.kind,
+                'kind': self.kind.value,
                 'right': self.right.serialize(),
                 }
 
@@ -534,18 +537,8 @@ class RefinementConstraint:
     def deserialize(cls, data: JsonDict) -> 'RefinementConstraint':
         return RefinementConstraint(
                 deserialize_refinement_expr(data['left']),
-                data['kind'],
+                ConstraintKind(data['kind']),
                 deserialize_refinement_expr(data['right']))
-
-
-RefinementConstraintKind = Literal[
-    RefinementConstraint.EQ,
-    RefinementConstraint.NOT_EQ,
-    RefinementConstraint.LT,
-    RefinementConstraint.LT_EQ,
-    RefinementConstraint.GT,
-    RefinementConstraint.GT_EQ,
-    ]
 
 
 class RefinementInfo:
@@ -2551,17 +2544,17 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
         def constraint_str(c: RefinementConstraint) -> str:
             left = expr_str(c.left)
             right = expr_str(c.right)
-            if c.kind == RefinementConstraint.EQ:
+            if c.kind == ConstraintKind.EQ:
                 kind = "=="
-            if c.kind == RefinementConstraint.NOT_EQ:
+            if c.kind == ConstraintKind.NOT_EQ:
                 kind = "!="
-            if c.kind == RefinementConstraint.LT:
+            if c.kind == ConstraintKind.LT:
                 kind = "<"
-            if c.kind == RefinementConstraint.LT_EQ:
+            if c.kind == ConstraintKind.LT_EQ:
                 kind = "<="
-            if c.kind == RefinementConstraint.GT:
+            if c.kind == ConstraintKind.GT:
                 kind = ">"
-            if c.kind == RefinementConstraint.GT_EQ:
+            if c.kind == ConstraintKind.GT_EQ:
                 kind = ">="
             return "{} {} {}".format(left, kind, right)
 

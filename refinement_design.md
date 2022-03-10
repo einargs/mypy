@@ -64,6 +64,14 @@ IsCat(V))]:
 ```
 
 # TODO
+## Tomorrow
+1. get tuple expressions to variables w/ constraints working
+2. get substitution of tuple expressions containing only integer literals into
+   refinement constraints working.
+3. get arithmetic in expressions and refinement constraints working.
+4. figure out how the fuck I need to handle `__init__`
+
+## General
 - Start using the type variable infrastructure to uniquely identify refinement
   variables.
   - This could help with e.g. one property referring to another property -- the
@@ -121,6 +129,7 @@ IsCat(V))]:
         because that is checked.
 - [ ] test refinement variable uniqueness
   - [ ] when inferring a new type from a return value.
+- [ ] test how this stuff interacts with overloaded functions
 
 # Luke thoughts
 - See how much I can do without needing to add annotations

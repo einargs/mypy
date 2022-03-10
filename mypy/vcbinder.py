@@ -7,7 +7,7 @@ from typing_extensions import TypeAlias, TypeGuard
 
 from mypy.types import (
     Type, AnyType, PartialType, UnionType, TypeOfAny, NoneType, get_proper_type,
-    BaseType, RefinementConstraint, RefinementExpr, RefinementConstraintKind,
+    BaseType, RefinementConstraint, RefinementExpr, ConstraintKind,
     RefinementLiteral, RefinementVar, RefinementTuple, RefinementValue,
 )
 from mypy.nodes import (
@@ -208,6 +208,10 @@ class VerificationBinder:
         # Maps variable names to the smt variables
         self.var_versions: Dict[VerificationVar, SMTVar] = {}
 
+        # Tracks what expressions have had constraints "loaded" from their
+        # types.
+        self.has_been_touched: Set[VerificationVar] = set()
+
         # Maps variable names to the variable names containing them.
         # Used to track what variables to invalidate if another variable is
         # invalidated.
@@ -237,6 +241,7 @@ class VerificationBinder:
         else:
             fresh_var = self.fresh_smt_var(var)
             self.var_versions[var] = fresh_var
+            self.has_been_touched.add(var)
             return fresh_var
 
     def invalidate_var(self, var: VerificationVar) -> None:
@@ -244,10 +249,13 @@ class VerificationBinder:
         with no associated constraints the next time it is used.
         """
         if var in self.var_versions:
+            print("Invalidating:", self.var_versions[var])
             del self.var_versions[var]
-            if var in self.dependencies:
-                for dep in self.dependencies[var]:
-                    self.invalidate_var(dep)
+        else:
+            print("Invalidating:", var)
+        if var in self.dependencies:
+            for dep in self.dependencies[var]:
+                self.invalidate_var(dep)
 
     def invalidate_vars_in_expr(self, expr: Expression) -> None:
         """Invalidate all mentions of `RealVar`s in an expression.
@@ -330,7 +338,7 @@ class VerificationBinder:
                     "refinement variable", ctx)
                 return []
 
-            if con.kind != RefinementConstraint.EQ:
+            if con.kind != ConstraintKind.EQ:
                 self.fail("Can only use == with tuple expressions", ctx)
                 return []
 
@@ -352,24 +360,24 @@ class VerificationBinder:
 
     def translate_single_constraint(self,
             left: SMTExpr,
-            kind: RefinementConstraintKind,
+            kind: ConstraintKind,
             right: SMTExpr,
             *, ctx: Context) -> SMTConstraint:
         if not isinstance(left, z3.ArithRef) and not isinstance(right, z3.ArithRef):
             self.fail("A refinement constraint must include at least one "
                     "refinement variable", ctx)
 
-        if kind == RefinementConstraint.EQ:
+        if kind == ConstraintKind.EQ:
             return left == right
-        elif kind == RefinementConstraint.NOT_EQ:
+        elif kind == ConstraintKind.NOT_EQ:
             return left != right
-        elif kind == RefinementConstraint.LT:
+        elif kind == ConstraintKind.LT:
             return left < right
-        elif kind == RefinementConstraint.LT_EQ:
+        elif kind == ConstraintKind.LT_EQ:
             return left <= right
-        elif kind == RefinementConstraint.GT:
+        elif kind == ConstraintKind.GT:
             return left > right
-        elif kind == RefinementConstraint.GT_EQ:
+        elif kind == ConstraintKind.GT_EQ:
             return left >= right
 
     def add_bound_var(self,
@@ -476,7 +484,7 @@ class VerificationBinder:
 
             # TODO check that other stuff doesn't somehow get added before type
             # constraints can be added.
-            if is_refined_type(expr_type) and var not in self.var_versions:
+            if is_refined_type(expr_type) and var not in self.has_been_touched:
                 assert expr_type.refinements, "guarenteed by is_refined_type"
                 if expr_type.refinements.var is None:
                     ref_var = None

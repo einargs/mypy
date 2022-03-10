@@ -178,6 +178,38 @@ def test_call_args(m: Annotated[int, V, V > 9]) -> Annotated[int, A, A > 0]:
 
 [builtins fixtures/tuple.pyi]
 
+[case testRefinementVarInvalidation]
+from typing_extensions import Annotated
+from refinement import *
+
+def f0(a: int) -> None:
+    return None
+
+def f1(a: int) -> Annotated[int, A, A > 3]:
+    return 5
+
+def f2(a: Annotated[int, A, A > 3]) -> Annotated[int, B, B == A]:
+    return a
+
+def f3(a: Annotated[int, A, A > 3]) -> None:
+    return None
+
+a: Annotated[int, A, A > 1] = 2
+f0(a)
+b: Annotated[int, B, B > 0] = a  # E: refinement type check failed
+
+def b0(a0: Annotated[int, A, A > 10]) -> None:
+    a1 = a0
+    f3(a0)  # E: refinement type check failed
+    f3(a1)
+    x: Annotated[int, X, X > 3] = 7
+    y: Annotated[int, Y, Y > 3] = f1(x)
+    # This works because no type info from x is needed
+    z: Annotated[int, Z, Z > 2] = f1(x)
+    v: Annotated[int, V, V > 2] = x  # E: refinement type check failed
+    c: Annotated[int, C, C > 1] = f2(x)  # E: refinement type check failed
+[builtins fixtures/tuple.pyi]
+
 [case testRefinementExprStmt]
 from typing_extensions import Annotated
 from refinement import *

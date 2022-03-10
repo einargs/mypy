@@ -40,7 +40,7 @@ from mypy.types import (
     Type, CallableType, AnyType, UnboundType, TupleType, TypeList, EllipsisType, CallableArgument,
     TypeOfAny, Instance, RawExpressionType, ProperType, UnionType, ConstraintSynType,
     RefinementVar, RefinementLiteral, RefinementConstraint, RefinementTuple,
-    RefinementExpr, RefinementConstraintKind,
+    RefinementExpr, ConstraintKind,
 )
 from mypy import defaults
 from mypy import message_registry, errorcodes as codes
@@ -1591,19 +1591,19 @@ class TypeConverter:
         if len(n.ops) != 1:
             return self.invalid_type(n)
 
-        kind: RefinementConstraintKind
+        kind: ConstraintKind
         if isinstance(n.ops[0], ast3.Eq):
-            kind = RefinementConstraint.EQ
+            kind = ConstraintKind.EQ
         elif isinstance(n.ops[0], ast3.NotEq):
-            kind = RefinementConstraint.NOT_EQ
+            kind = ConstraintKind.NOT_EQ
         elif isinstance(n.ops[0], ast3.Lt):
-            kind = RefinementConstraint.LT
+            kind = ConstraintKind.LT
         elif isinstance(n.ops[0], ast3.LtE):
-            kind = RefinementConstraint.LT_EQ
+            kind = ConstraintKind.LT_EQ
         elif isinstance(n.ops[0], ast3.Gt):
-            kind = RefinementConstraint.GT
+            kind = ConstraintKind.GT
         elif isinstance(n.ops[0], ast3.GtE):
-            kind = RefinementConstraint.GT_EQ
+            kind = ConstraintKind.GT_EQ
         else:
             return self.invalid_type(n)
 
