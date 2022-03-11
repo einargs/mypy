@@ -40,7 +40,7 @@ from mypy.types import (
     Type, CallableType, AnyType, UnboundType, TupleType, TypeList, EllipsisType, CallableArgument,
     TypeOfAny, Instance, RawExpressionType, ProperType, UnionType, ConstraintSynType,
     RefinementVar, RefinementLiteral, RefinementConstraint, RefinementTuple,
-    RefinementExpr, ConstraintKind,
+    RefinementExpr, ConstraintKind, RefinementBinOpKind, RefinementBinOp,
 )
 from mypy import defaults
 from mypy import message_registry, errorcodes as codes
@@ -1396,6 +1396,22 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
     def convert_sub_expr(node: AST) -> Optional[RefinementExpr]:
         if isinstance(node, ast3.Constant) and isinstance(node.value, int):
             return RefinementLiteral(node.value)
+        elif isinstance(node, ast3.BinOp):
+            if isinstance(node.op, ast3.Add):
+                kind = RefinementBinOpKind.add
+            elif isinstance(node.op, ast3.Sub):
+                kind = RefinementBinOpKind.sub
+            elif isinstance(node.op, ast3.Mult):
+                kind = RefinementBinOpKind.mult
+            elif isinstance(node.op, ast3.FloorDiv):
+                kind = RefinementBinOpKind.floor_div
+            else:
+                return None
+            left = convert_sub_expr(node.left)
+            right = convert_sub_expr(node.right)
+            if left and right:
+                return RefinementBinOp(left, kind, right)
+
         elif isinstance(node, ast3.Attribute):
             value = convert_sub_expr(node.value)
             if isinstance(value, RefinementVar):

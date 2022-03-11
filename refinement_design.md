@@ -64,12 +64,11 @@ IsCat(V))]:
 ```
 
 # TODO
-## Tomorrow
+## Next
 1. get tuple expressions to variables w/ constraints working
 2. get substitution of tuple expressions containing only integer literals into
    refinement constraints working.
-3. get arithmetic in expressions and refinement constraints working.
-4. figure out how the fuck I need to handle `__init__`
+3. figure out how the fuck I need to handle `__init__`
 
 ## General
 - Start using the type variable infrastructure to uniquely identify refinement
@@ -89,7 +88,6 @@ IsCat(V))]:
   * currently I don't think this can handle adding refinement type info to
     indexed lvalues.
   * Get the ability to mutate variables working
-- enable calling functions with refinement types
 - I need to prefix the refinement variables with the module they're defined in.
 - make sure that return values of refined functions that are assigned to
   variables have refined types inferred.

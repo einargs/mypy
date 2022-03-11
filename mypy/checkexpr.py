@@ -21,6 +21,7 @@ from mypy.types import (
     is_named_instance, FunctionLike, ParamSpecType, ParamSpecFlavor,
     StarType, is_optional, remove_optional, is_generic_instance, get_proper_type, ProperType,
     get_proper_types, flatten_nested_unions, LITERAL_TYPE_NAMES, BaseType,
+    RefinementInfo,
 )
 from mypy.nodes import (
     NameExpr, RefExpr, Var, FuncDef, OverloadedFuncDef, TypeInfo, CallExpr,
@@ -2252,11 +2253,23 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                     if right_radd_method is None:
                         return self.concat_tuples(proper_left_type, proper_right_type)
 
+
         if e.op in operators.op_methods:
             method = self.get_operator_method(e.op)
             result, method_type = self.check_op(method, left_type, e.right, e,
                                                 allow_reverse=True)
             e.method_type = method_type
+            
+            if (isinstance(result, Instance)
+                    and result.type.fullname == "builtins.int"
+                    and e.op in ('+', '-', '*', '//')):
+                proper_right_type = get_proper_type(self.accept(e.right))
+                result_var = self.chk.vc_binder.var_for_bin_op(
+                        e, proper_left_type, proper_right_type)
+                if result_var:
+                    ref_info = RefinementInfo(None, [], result_var)
+                    new_result = result.copy_with_refinements(ref_info)
+                    return new_result
             return result
         else:
             raise RuntimeError('Unknown operator {}'.format(e.op))

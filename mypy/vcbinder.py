@@ -9,6 +9,7 @@ from mypy.types import (
     Type, AnyType, PartialType, UnionType, TypeOfAny, NoneType, get_proper_type,
     BaseType, RefinementConstraint, RefinementExpr, ConstraintKind,
     RefinementLiteral, RefinementVar, RefinementTuple, RefinementValue,
+    RefinementBinOpKind, RefinementBinOp, Instance, ProperType,
 )
 from mypy.nodes import (
     Expression, ComparisonExpr, OpExpr, MemberExpr, UnaryExpr, StarExpr, IndexExpr,
@@ -269,6 +270,17 @@ class VerificationBinder:
             ext_props = []
         if isinstance(expr, RefinementLiteral):
             return expr.value
+        elif isinstance(expr, RefinementBinOp):
+            left = self.translate_expr(expr.left)
+            right = self.translate_expr(expr.right)
+            if expr.kind == RefinementBinOpKind.add:
+                return left + right
+            elif expr.kind == RefinementBinOpKind.sub:
+                return left - right
+            elif expr.kind == RefinementBinOpKind.mult:
+                return left * right
+            elif expr.kind == RefinementBinOpKind.floor_div:
+                return left / right
         elif isinstance(expr, RefinementVar):
             # Resolve anything where we have a term variable m, but we use the
             # refinement variable R to refer to it in constraints.
@@ -445,6 +457,92 @@ class VerificationBinder:
             self.add_constraints(cons)
         return fresh_var
 
+    def real_var_from_expr(
+            self,
+            expr: Expression,
+            expr_type: Optional[Type]
+    ) -> Optional[VerificationVar]:
+        """Attempt to directly convert an expression to a real verification
+        variable.
+        """
+        var = to_real_var(expr)
+
+        if var is None:
+            return None
+
+        # TODO: how do I deal with other variables mentioned in this, e.g.,
+        # other properties of an object? Thinking about it maybe uniquing
+        # the refinement variables in semantic analysis would help with
+        # that. That way refinement variables would know they're talking
+        # about the other properties when those come in...
+
+        # TODO check that other stuff doesn't somehow get added before type
+        # constraints can be added.
+        if is_refined_type(expr_type) and var not in self.has_been_touched:
+            assert expr_type.refinements, "guarenteed by is_refined_type"
+            if expr_type.refinements.var is None:
+                ref_var = None
+            else:
+                ref_var = expr_type.refinements.var.name
+
+            with self.var_binding(ref_var, var):
+                for c in expr_type.refinements.constraints:
+                    cons = self.translate_to_constraints(c, ctx=expr)
+                    self.add_constraints(cons)
+
+        return var
+
+    def smt_expr_from(
+            self,
+            expr: Expression,
+            expr_type: ProperType
+    ) -> Optional[SMTExpr]:
+        """See if an expression is either an integer literal or has a tracked
+        smt variable.
+        """
+        if isinstance(expr, IntExpr):
+            return expr.value
+        elif (is_refined_type(expr_type)
+                and expr_type.refinements
+                and expr_type.refinements.verification_var):
+            smt_var = self.get_smt_var(expr_type.refinements.verification_var)
+            print("smt_var", smt_var)
+            return smt_var
+        else:
+            var = self.real_var_from_expr(expr, expr_type)
+            if var:
+                return self.get_smt_var(var)
+
+        return None
+
+    def var_for_bin_op(
+            self,
+            expr: OpExpr,
+            left_type: ProperType,
+            right_type: ProperType
+    ) -> Optional[VerificationVar]:
+        left = self.smt_expr_from(expr.left, left_type)
+        right = self.smt_expr_from(expr.right, right_type)
+        if left is None or right is None:
+            return None
+
+        if expr.op == '+':
+            smt_expr = left + right
+        elif expr.op == '-':
+            smt_expr = left - right
+        elif expr.op == '*':
+            smt_expr = left * right
+        elif expr.op == '//':
+            smt_expr = left / right
+        else:
+            return None
+
+        fresh_var = self.fresh_verification_var()
+        smt_var = self.get_smt_var(fresh_var)
+        self.add_constraints([smt_var == smt_expr])
+
+        return fresh_var
+
     def var_from_expr(
             self,
             expr: Expression,
@@ -474,28 +572,13 @@ class VerificationBinder:
         elif isinstance(expr, TupleExpr):
             self.fail("Tuple expressions are not yet implemented", expr)
             return None, True
+        elif (is_refined_type(expr_type)
+                and expr_type.refinements
+                and expr_type.refinements.verification_var):
+            print("triggered")
+            return expr_type.refinements.verification_var, False
         else:
-            var = to_real_var(expr)
-            # TODO: how do I deal with other variables mentioned in this, e.g.,
-            # other properties of an object? Thinking about it maybe uniquing
-            # the refinement variables in semantic analysis would help with
-            # that. That way refinement variables would know they're talking
-            # about the other properties when those come in...
-
-            # TODO check that other stuff doesn't somehow get added before type
-            # constraints can be added.
-            if is_refined_type(expr_type) and var not in self.has_been_touched:
-                assert expr_type.refinements, "guarenteed by is_refined_type"
-                if expr_type.refinements.var is None:
-                    ref_var = None
-                else:
-                    ref_var = expr_type.refinements.var.name
-
-                with self.var_binding(ref_var, var):
-                    for c in expr_type.refinements.constraints:
-                        cons = self.translate_to_constraints(c, ctx=expr)
-                        self.add_constraints(cons)
-
+            var = self.real_var_from_expr(expr, expr_type)
             return var, False
 
     def check_implication(self, constraints: list[SMTConstraint]) -> bool:
@@ -509,7 +592,7 @@ class VerificationBinder:
         if constraints == []:
             return True
 
-        print("Variables:", self.smt_variables)
+        # print("Variables:", self.smt_variables)
         print("Given:", self.constraints)
         print("Goal:", constraints)
 
@@ -519,7 +602,8 @@ class VerificationBinder:
         # -- that we have no way it can be *untrue*.
         cond = z3.Not(z3.And(constraints))
         result = self.smt_solver.check(cond)
-        # print("Result:", "valid" if result == z3.unsat else "invalid")
+        print("Result:", "valid" if result == z3.unsat else "invalid")
+        print()
         return result == z3.unsat
 
     def check_subsumption(self,

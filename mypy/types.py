@@ -433,6 +433,49 @@ class RefinementLiteral(RefinementExpr):
         return RefinementLiteral(data['value'])
 
 
+class RefinementBinOpKind(enum.Enum):
+    add = enum.auto()
+    sub = enum.auto()
+    mult = enum.auto()
+    floor_div = enum.auto()
+
+
+class RefinementBinOp(RefinementExpr):
+    """A binary expression that adds, subtacts, multiplies, or floor divides
+    two other refinement expressions.
+    """
+    __slots__ = ('left', 'kind', 'right')
+
+    def __init__(self,
+            left: RefinementExpr,
+            kind: RefinementBinOpKind,
+            right: RefinementExpr
+            ):
+        self.left = left
+        self.kind = kind
+        self.right = right
+
+    def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
+        left = self.left.substitute(bindings)
+        right = self.right.substitute(bindings)
+        return RefinementBinOp(left, self.kind, right)
+
+    def serialize(self) -> JsonDict:
+        return {'.class': 'RefinementBinOp',
+                'left': self.left.serialize(),
+                'kind': self.kind.value,
+                'right': self.right.serialize()
+                }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> 'RefinementBinOp':
+        assert data['.class'] == 'RefinementBinOp'
+        return RefinementBinOp(
+                deserialize_refinement_expr(data['left']),
+                RefinementBinOpKind(data['kind']),
+                deserialize_refinement_expr(data['left']))
+
+
 class RefinementTuple(RefinementExpr):
     """A tuple of refinement expressions.
     """
@@ -2538,6 +2581,18 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
                 return "({})".format(", ".join(expr_str(e) for e in e.items))
             elif isinstance(e, RefinementVar):
                 return ".".join([e.name] + e.props)
+            elif isinstance(e, RefinementBinOp):
+                if e.kind == RefinementBinOpKind.add:
+                    kind = "+"
+                elif e.kind == RefinementBinOpKind.sub:
+                    kind = "-"
+                elif e.kind == RefinementBinOpKind.mult:
+                    kind = "*"
+                elif e.kind == RefinementBinOpKind.floor_div:
+                    kind = "//"
+                left = expr_str(e.left)
+                right = expr_str(e.right)
+                return "{} {} {}".format(left, kind, right)
             elif isinstance(e, RefinementLiteral):
                 return str(e.value)
 
@@ -2562,7 +2617,6 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
             for c in base.refinements.constraints)
 
         if base.refinements.var is None:
-            assert constraints_str != "", "RefinementInfo created without any info"
             return "{}{{{}}}".format(base_str, constraints_str)
         else:
             var_str = expr_str(base.refinements.var)
