@@ -10,6 +10,7 @@ from mypy.types import (
     BaseType, RefinementConstraint, RefinementExpr, ConstraintKind,
     RefinementLiteral, RefinementVar, RefinementTuple, RefinementValue,
     RefinementBinOpKind, RefinementBinOp, Instance, ProperType, TupleType,
+    TypeVarType,
 )
 from mypy.nodes import (
     Expression, ComparisonExpr, OpExpr, MemberExpr, UnaryExpr, StarExpr, IndexExpr,
@@ -383,27 +384,34 @@ class VerificationBinder:
         elif kind == ConstraintKind.GT_EQ:
             return left >= right
 
-    def add_bound_var(self,
+    def add_bound_var(
+            self,
             term_var: VerificationVar,
             ref_var: str,
-            context: Context) -> None:
+            *, ctx: Context,
+            ) -> None:
         if ref_var in self.bound_var_to_name:
             var = self.bound_var_to_name[ref_var]
             if var in self.var_versions:
-                self.fail('Tried to bind already bound refinement variable "{}"'.format(ref_var),
-                        context)
+                self.fail('Tried to bind already bound refinement '
+                        'variable "{}"'.format(ref_var), ctx)
                 return
 
         self.bound_var_to_name[ref_var] = term_var
         return
 
-    def add_var(self, var: VerificationVar, typ: Type, *, ctx: Context) -> None:
+    def add_var(
+            self,
+            var: VerificationVar,
+            typ: Type,
+            *, ctx: Context
+            ) -> None:
         if not isinstance(typ, BaseType) or typ.refinements is None:
             return
         info = typ.refinements
 
         if info.var is not None:
-            self.add_bound_var(var, info.var.name, typ)
+            self.add_bound_var(var, info.var.name, ctx=ctx)
 
         for c in info.constraints:
             cons = self.translate_to_constraints(c, ctx=ctx)
@@ -418,6 +426,23 @@ class VerificationBinder:
         if var is None:
             return
         self.add_var(var, typ, ctx=lvalue)
+
+    def add_inferred_lvalue(self, lvalue: Lvalue, typ: Type) -> None:
+        """Add a verification var with constraints based on the inferred type.
+
+        Unlike `add_lvalue`, this doesn't bind the refinement variable.
+        """
+        if not isinstance(typ, BaseType) or typ.refinements is None:
+            return
+        info = typ.refinements
+        var = to_real_var(lvalue)
+        if var is None:
+            return
+        ref_var = info.var.name if info.var else None
+        with self.var_binding(ref_var, var):
+            for c in info.constraints:
+                cons = self.translate_to_constraints(c, ctx=lvalue)
+                self.add_constraints(cons)
 
     def fail(self, msg: str, context: Context) -> None:
         self.msg.fail(msg, context)

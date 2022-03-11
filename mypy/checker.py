@@ -2372,7 +2372,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 # Now we invalidate all the refinement variables after checking
                 self.vc_binder.invalidate_vars_in_expr(rvalue)
                 # Add this to the refinement types
-                self.vc_binder.add_lvalue(lvalue, rvalue_type)
+                self.vc_binder.add_inferred_lvalue(lvalue, rvalue_type)
 
                 if not inferred.is_final:
                     rvalue_type = remove_instance_last_known_values(rvalue_type)

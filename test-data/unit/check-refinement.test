@@ -285,9 +285,17 @@ from refinement import *
 def f() -> Annotated[int, C, C > 1]:
     return 2
 
-c: Annotated[int, C, C > 10] = 12
-# The below errors because the C from `f()` is not properly scoped.
-x = f()
+def block0() -> None:
+    c: Annotated[int, C, 10 < C] = 12
+    x = f()
+    reveal_type(x)  # N: Revealed type is "builtins.int{C: C > 1}"
+    reveal_type(c)  # N: Revealed type is "builtins.int{C: 10 < C}"
+
+def block1() -> None:
+    c: Annotated[int, C, 10 < C] = 12
+    x = f()
+    reveal_type(x)  # N: Revealed type is "builtins.int{C: C > 1}"
+    a: Annotated[int, A, A >= 11] = c
 [builtins fixtures/tuple.pyi]
 
 [case testRefinementArithmetic]
@@ -386,5 +394,4 @@ def f4(v: Annotated[Tuple[int, int], V, V[0] > 1, V[1] > 2]) -> None:
     return None
 
 f4(f2((3,3)))
-
 [builtins fixtures/primitives.pyi]

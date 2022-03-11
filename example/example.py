@@ -1,4 +1,4 @@
-from typing import TypeVar, Generic, Annotated, Literal
+from typing import TypeVar, Generic, Annotated, Literal, Tuple
 from typing_extensions import TypeAlias
 from refinement import RefinementVar
 # import torch
@@ -21,11 +21,14 @@ A = RefinementVar('A')
 B = RefinementVar('B')
 C = RefinementVar('C')
 
-T1 = TypeVar('T1')
-T2 = TypeVar('T2')
-T3 = TypeVar('T3')
-T4 = TypeVar('T4')
+T = TypeVar('T')
+S = TypeVar('S')
 
+def f0(a: T) -> T:
+    return a
+
+def f1(a: T, b: S) -> Annotated[Tuple[T, S], V]:
+    return (a, f0(b))
 
 class Conv2d:
     def __init__(self, in_channels, out_channels, kernel_size, stride):
@@ -35,5 +38,3 @@ class Conv2d:
         self.stride = stride
 
 
-c = Conv2d(1, 1, 2, 3)
-reveal_type(c)
