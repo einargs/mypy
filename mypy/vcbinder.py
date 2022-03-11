@@ -393,8 +393,11 @@ class VerificationBinder:
         if ref_var in self.bound_var_to_name:
             var = self.bound_var_to_name[ref_var]
             if var in self.var_versions:
-                self.fail('Tried to bind already bound refinement '
-                        'variable "{}"'.format(ref_var), ctx)
+                # We only throw an error if we're using the same refinement
+                # variable for a different term variable.
+                if term_var != var:
+                    self.fail('Tried to bind already bound refinement '
+                            'variable "{}"'.format(ref_var), ctx)
                 return
 
         self.bound_var_to_name[ref_var] = term_var
@@ -422,6 +425,7 @@ class VerificationBinder:
         self.add_var(var, typ, ctx=ctx)
 
     def add_lvalue(self, lvalue: Lvalue, typ: Type) -> None:
+        # print("known type", typ, "for", lvalue)
         var = to_real_var(lvalue)
         if var is None:
             return

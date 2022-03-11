@@ -253,7 +253,6 @@ from refinement import *
 a: Annotated[int, A, A > 5] = 6
 a = 7
 a = 3  # E: refinement type check failed
-
 [builtins fixtures/tuple.pyi]
 
 [case testRefinementMembers]
