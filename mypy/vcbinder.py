@@ -9,7 +9,7 @@ from mypy.types import (
     Type, AnyType, PartialType, UnionType, TypeOfAny, NoneType, get_proper_type,
     BaseType, RefinementConstraint, RefinementExpr, ConstraintKind,
     RefinementLiteral, RefinementVar, RefinementTuple, RefinementValue,
-    RefinementBinOpKind, RefinementBinOp, Instance, ProperType,
+    RefinementBinOpKind, RefinementBinOp, Instance, ProperType, TupleType,
 )
 from mypy.nodes import (
     Expression, ComparisonExpr, OpExpr, MemberExpr, UnaryExpr, StarExpr, IndexExpr,
@@ -25,10 +25,8 @@ import mypy.checker
 from mypy.visitor import ExpressionVisitor
 from mypy.literals import Key, literal, literal_hash, subkeys
 from mypy.messages import MessageBuilder
+from mypy.var_prop import VarProp, prop_list_str
 import z3
-
-
-VarProp: TypeAlias = Union[str, int]
 
 
 def is_refined_type(typ: Type) -> TypeGuard[BaseType]:
@@ -80,10 +78,6 @@ class VerificationVar:
             props.append(p)
             vars.append(self.copy_base(props.copy()))
         return vars
-
-
-def prop_list_str(base: str, props: list[VarProp]) -> str:
-    return "".join([base] + [f"[{v}]" if isinstance(v, int) else f".{v}" for v in props])
 
 
 class RealVar(VerificationVar):
@@ -250,10 +244,7 @@ class VerificationBinder:
         with no associated constraints the next time it is used.
         """
         if var in self.var_versions:
-            print("Invalidating:", self.var_versions[var])
             del self.var_versions[var]
-        else:
-            print("Invalidating:", var)
         if var in self.dependencies:
             for dep in self.dependencies[var]:
                 self.invalidate_var(dep)
@@ -286,7 +277,7 @@ class VerificationBinder:
             # refinement variable R to refer to it in constraints.
             default_var = RealVar(expr.name)
             base = self.bound_var_to_name.get(expr.name, default_var)
-            var = base.extend(cast(list[VarProp], expr.props) + ext_props)
+            var = base.extend(expr.props + ext_props)
             for sv in var.subvars():
                 self.dependencies.setdefault(sv, set()).add(var)
 
@@ -570,12 +561,27 @@ class VerificationBinder:
             else:
                 return None, False
         elif isinstance(expr, TupleExpr):
-            self.fail("Tuple expressions are not yet implemented", expr)
-            return None, True
+            var = self.fresh_verification_var()
+            has_sent_error = False
+            for i,item in enumerate(expr.items):
+                if isinstance(expr_type, TupleType):
+                    idx_type = expr_type.items[i]
+                else:
+                    idx_type = None
+                var_idx = var.extend([i])
+                item_var, idx_error = self.var_from_expr(item, idx_type)
+                has_sent_error = has_sent_error or idx_error
+                if item_var is None:
+                    continue
+                item_smt = self.get_smt_var(item_var)
+                idx_smt = self.get_smt_var(var_idx)
+                self.add_constraints([idx_smt == item_smt])
+            return var, has_sent_error
+            # self.fail("Tuple expressions are not yet implemented", expr)
+            # return None, True
         elif (is_refined_type(expr_type)
                 and expr_type.refinements
                 and expr_type.refinements.verification_var):
-            print("triggered")
             return expr_type.refinements.verification_var, False
         else:
             var = self.real_var_from_expr(expr, expr_type)
@@ -592,7 +598,7 @@ class VerificationBinder:
         if constraints == []:
             return True
 
-        # print("Variables:", self.smt_variables)
+        print("Variables:", self.smt_variables)
         print("Given:", self.constraints)
         print("Goal:", constraints)
 
@@ -632,10 +638,6 @@ class VerificationBinder:
         FAIL_MSG = "refinement type check failed"
 
         if expr is None or info.var is None:
-            # This only applies to return statement checking. This case should
-            # be prevented by checks to ensure we aren't giving a None type
-            # a refinement variable.
-            # TODO: implement those checks.
             assert expr is not None or info.var is not None
 
             constraints = [smt_c
@@ -646,6 +648,7 @@ class VerificationBinder:
             return
         else:
             var, has_sent_error = self.var_from_expr(expr, expr_type)
+            print("var", var, "for", expr)
             if var is None:
                 if not has_sent_error:
                     self.fail('could not understand expression', ctx)

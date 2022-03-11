@@ -20,6 +20,7 @@ from mypy.nodes import (
 )
 from mypy.util import IdMapper
 from mypy.bogus_type import Bogus
+from mypy.var_prop import VarProp, prop_list_str
 
 if TYPE_CHECKING:
     from mypy.vcbinder import VerificationVar
@@ -503,8 +504,8 @@ class RefinementVar(RefinementExpr):
 
     __slots__ = ('name', 'props')
 
-    def __init__(self, name: str, props: Optional[list[str]] = None):
-        if props is None:
+    def __init__(self, name: str, props: Bogus[list[VarProp]] = _dummy):
+        if props is _dummy:
             props = []
         self.name = name
         self.props = props
@@ -533,7 +534,7 @@ class RefinementVar(RefinementExpr):
         return RefinementVar(data['name'], data['props'])
 
     def __repr__(self) -> str:
-        return ".".join([self.name] + self.props)
+        return prop_list_str(self.name, self.props)
 
 
 RefinementValue: _TypeAlias = Union[RefinementVar, RefinementLiteral]

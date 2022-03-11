@@ -68,6 +68,8 @@ IsCat(V))]:
 1. get tuple expressions to variables w/ constraints working
 2. get substitution of tuple expressions containing only integer literals into
    refinement constraints working.
+3. get the kinks with free variables and tuple equality worked out. See the
+   TODOs in `testRefinementTupleTerm` for more information.
 3. figure out how the fuck I need to handle `__init__`
 
 ## General
@@ -77,6 +79,8 @@ IsCat(V))]:
     refinement variables would be unique'd so that if a second property is
     brought in later, any constraints involving it on the first property snap
     into place.
+- Get constraints carrying over with free variables in function definitions.
+  See the TODO in `testRefinementTermArithmetic` for more details.
 - figure out when a variable with a refinement type can be invalidated.
   Assignment shouldn't invalidate it bc then it'll be checked.
   - I'm thinking

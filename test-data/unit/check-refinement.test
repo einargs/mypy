@@ -56,7 +56,7 @@ from typing_extensions import Annotated
 from refinement import *
 
 # TODO
-a: Annotated[Tuple[int, int], A, A == (1, 1)] = (1, 1)  # E: Tuple expressions are not yet implemented
+a: Annotated[Tuple[int, int], A, A == (1, 1)] = (1, 1)
 
 def f0(m: Annotated[Tuple[int, int], V, V == (5, 1)]) -> Annotated[int, A, A > 3]:
     return m[0]
@@ -309,6 +309,7 @@ x2: Annotated[int, X, X > 4] = x1
 [builtins fixtures/tuple.pyi]
 
 [case testRefinementTermArithmetic]
+from typing import Tuple
 from typing_extensions import Annotated
 from refinement import *
 
@@ -323,10 +324,11 @@ def f0(
 ) -> Annotated[int, C, C > A+B]:
     return a + b + 1
 
-a: Annotated[int, A, A > 1+2] = 4+4
-b: Annotated[int, B, B > 3+A] = f0(4,6) + a
-c: Annotated[int, C, C > 1+3] = 4  # E: refinement type check failed
-x: Annotated[int, X, X > 6] = f0(4,6) - 1
+def block0() -> None:
+    a: Annotated[int, A, A > 1+2] = 4+4
+    b: Annotated[int, B, B > 3+A] = f0(4,6) + a
+    c: Annotated[int, C, C > 1+3] = 4  # E: refinement type check failed
+    x: Annotated[int, X, X > 6] = f0(4,6) - 1
 
 def new_scope() -> Annotated[int, V, V > 4]:
     a: Annotated[int, A, A > 6] = f0(4,5)
@@ -339,4 +341,50 @@ def new_scope() -> Annotated[int, V, V > 4]:
     y: Annotated[int, Y, Y == 4] = 19 // 4
 
     return f0(a,b)
+
+def f1(
+    v: Annotated[Tuple[int, int], V, V[0] > 1, V[1] > 2]
+) -> Annotated[Tuple[int, int], X, X == (V[0]+3, V[1]+3)]:
+    return (v[0] + 3, v[1] + 3)
+
+def block1() -> None:
+    x: Annotated[Tuple[int, int], X, X == (6,6)] = f1((3,3))
+    y: Annotated[Tuple[int, int], Y, Y == (6,6)] = f1((1,3))  # E: refinement type check failed
 [builtins fixtures/ops.pyi]
+
+[case testRefinementTupleTerm]
+from typing import Tuple
+from typing_extensions import Annotated
+from refinement import *
+
+v: Annotated[Tuple[int, int, int], V, V == (1,2,3)] = (1,2,3)
+
+def f0(
+    v: Annotated[Tuple[int, int], V, V[0] > 1, V[1] > 2]
+) -> Annotated[Tuple[int, int], X, X == (V[0], V[1])]:
+    return (v[0], v[1])
+
+x: Annotated[Tuple[int, int], X, X[0] > 4, X[1] > 5] = f0((6,6))
+
+# TODO: there are problems with tuple equality. Basically it's creating a
+# constraint as if X and V are integers instead of tuples. I may need to either
+# introduce types or switch to using `is` instead of `==` for tuple expansion.
+def f1(v: Annotated[Tuple[int, int], V]) -> Annotated[Tuple[int, int], X, X == (V[0], V[1])]:
+    return (v[0], v[1])
+
+def f2(
+    v: Annotated[Tuple[int, int], V]
+) -> Annotated[Tuple[int, int], X, X[0] == V[0], X[1] == V[1]]:
+    return (v[0], v[1])
+
+def f3() -> Annotated[Tuple[int, int], A, A[0] == 4, A[1] == 4]:
+    return (4, 4)
+
+a: Annotated[Tuple[int, int], A, A == (4, 4)] = f1(f2(f3()))
+
+def f4(v: Annotated[Tuple[int, int], V, V[0] > 1, V[1] > 2]) -> None:
+    return None
+
+f4(f2((3,3)))
+
+[builtins fixtures/primitives.pyi]
