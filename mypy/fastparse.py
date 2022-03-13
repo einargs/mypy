@@ -41,6 +41,7 @@ from mypy.types import (
     TypeOfAny, Instance, RawExpressionType, ProperType, UnionType, ConstraintSynType,
     RefinementVar, RefinementLiteral, RefinementConstraint, RefinementTuple,
     RefinementExpr, ConstraintKind, RefinementBinOpKind, RefinementBinOp,
+    RefinementSelf,
 )
 from mypy import defaults
 from mypy import message_registry, errorcodes as codes
@@ -1395,7 +1396,8 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
     """
     def convert_sub_expr(node: AST) -> Optional[RefinementExpr]:
         if isinstance(node, ast3.Constant) and isinstance(node.value, int):
-            return RefinementLiteral(node.value)
+            return RefinementLiteral(node.value,
+                    line=node.lineno, column=node.col_offset)
         elif isinstance(node, ast3.BinOp):
             if isinstance(node.op, ast3.Add):
                 kind = RefinementBinOpKind.add
@@ -1410,11 +1412,12 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
             left = convert_sub_expr(node.left)
             right = convert_sub_expr(node.right)
             if left and right:
-                return RefinementBinOp(left, kind, right)
+                return RefinementBinOp(left, kind, right,
+                        line=node.lineno, column=node.col_offset)
 
         elif isinstance(node, ast3.Attribute):
             value = convert_sub_expr(node.value)
-            if isinstance(value, RefinementVar):
+            if isinstance(value, (RefinementVar, RefinementSelf)):
                 value.props.append(node.attr)
                 return value
             else:
@@ -1423,11 +1426,15 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
                 and isinstance(node.slice, ast3.Constant)
                 and isinstance(node.slice.value, int)):
             value = convert_sub_expr(node.value)
-            if isinstance(value, RefinementVar):
+            if isinstance(value, (RefinementVar, RefinementSelf)):
                 value.props.append(node.slice.value)
                 return value
         elif isinstance(node, ast3.Name):
-            return RefinementVar(node.id)
+            if node.id == "RSelf":
+                return RefinementSelf(line=node.lineno, column=node.col_offset)
+            else:
+                return RefinementVar(node.id,
+                        line=node.lineno, column=node.col_offset)
         else:
             return None
 
@@ -1439,7 +1446,7 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
                 return None
             else:
                 values.append(v)
-        return RefinementTuple(values)
+        return RefinementTuple(values, line=node.lineno, column=node.col_offset)
     else:
         return convert_sub_expr(node)
 
@@ -1635,7 +1642,10 @@ class TypeConverter:
         right = convert_refinement_expr(n.comparators[0])
         if left is None or right is None:
             return self.invalid_type(n)
-        return ConstraintSynType(RefinementConstraint(left, kind, right))
+        return ConstraintSynType(
+                RefinementConstraint(left, kind, right),
+                line=self.line,
+                column=n.col_offset)
 
     def visit_NameConstant(self, n: NameConstant) -> Type:
         if isinstance(n.value, bool):

@@ -20,6 +20,8 @@ from mypy.types import (
     TypeVarLikeType, ParamSpecType, ParamSpecFlavor, callable_with_ellipsis,
     TYPE_ALIAS_NAMES, FINAL_TYPE_NAMES, LITERAL_TYPE_NAMES, ANNOTATED_TYPE_NAMES,
     RefinementVar, RefinementConstraint, RefinementInfo, BaseType, ConstraintSynType,
+    RefinementSelf, RefinementExpr, RefinementLiteral, RefinementBinOp,
+    RefinementTuple,
 )
 
 from mypy.nodes import (
@@ -395,10 +397,12 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
             constraints: list[RefinementConstraint] = []
             for c in con_args:
                 if isinstance(c, ConstraintSynType):
+                    if not self.verify_refinement_vars_in_constraint(c.value):
+                        return AnyType(TypeOfAny.from_error)
                     constraints.append(c.value)
                 else:
                     self.fail("All Annotated refinement types accept only "
-                            "constraints after the type and optional"
+                            "constraints after the type and optional "
                             "refinement variable.", c)
                     return AnyType(TypeOfAny.from_error)
 
@@ -426,6 +430,55 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
             return self.named_type('builtins.bool')
         return None
 
+    def is_refinement_self_valid(self, ctx: Context) -> bool:
+        """Check if RSelf is currently imported.
+        """
+        sym = self.lookup_qualified("RSelf", ctx)
+        return sym and sym.node and sym.node.fullname == "refinement.RSelf"
+
+    def validate_refinement_var(self, var: RefinementVar) -> bool:
+        """Verify that a refinement variable was actually declared as a
+        refinement variable.
+
+        Will log errors if it can't find the refinement variable. Returns
+        `True` if no problems.
+        """
+        # This looks up the definition of the refinement variable.
+        sym = self.lookup_qualified(var.name, var)
+        if sym is None or sym.node is None:
+            # It seems lookup_qualified will throw it's own error.
+            # self.fail("Couldn't find symbol related to refinement variable", t)
+            return False
+
+        if not isinstance(sym.node, RefinementVarExpr):
+            self.fail("type is not declarated as a refinement var", t)
+            return False
+
+        return True
+
+    def verify_refinement_vars_in_constraint(self, c: RefinementConstraint) -> bool:
+        """Returns true if everything is okay, and returns false if an error
+        message was logged.
+        """
+        
+        def verify_sub_expr(e: RefinementExpr) -> bool:
+            """Returns a new expression if it changed and whether it is valid.
+            """
+            if isinstance(e, RefinementSelf):
+                return self.is_refinement_self_valid(e)
+            elif isinstance(e, RefinementVar):
+                return self.validate_refinement_var(e)
+            elif isinstance(e, RefinementTuple):
+                return all(verify_sub_expr(item) for item in e.items)
+            elif isinstance(e, RefinementBinOp):
+                return verify_sub_expr(e.left) and verify_sub_expr(e.right)
+            elif isinstance(e, RefinementLiteral):
+                return True
+            else:
+                assert False, "No other cases"
+
+        return verify_sub_expr(c.left) and verify_sub_expr(c.right)
+
     def convert_type_to_refinement_var(self, t: Type) -> Optional[RefinementVar]:
         """Convert an unbound type to a refinement variable.
         """
@@ -435,16 +488,9 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
         props = t.name.split(".")
         name = props.pop(0)
 
-        # This looks up the definition of the refinement variable.
-        sym = self.lookup_qualified(name, t)
-        if sym is None or sym.node is None:
-            # It seems lookup_qualified will throw it's own error.
-            # self.fail("Couldn't find symbol related to refinement variable", t)
-            return None
+        var = RefinementVar(name, props, line=t.line, column=t.column)
+        return var if self.validate_refinement_var(var) else None
 
-        if not isinstance(sym.node, RefinementVarExpr):
-            self.fail("type is not declarated as a refinement var", t)
-            return None
 
         return RefinementVar(name, props)
 
@@ -1266,7 +1312,6 @@ def expand_type_alias(node: TypeAlias, args: List[Type],
     if act_len != exp_len:
         fail('Bad number of arguments for type alias, expected: %s, given: %s'
              % (exp_len, act_len), ctx)
-        return set_any_tvars(node, ctx.line, ctx.column, from_error=True)
     typ = TypeAliasType(node, args, ctx.line, ctx.column)
     assert typ.alias is not None
     # HACK: Implement FlexibleAlias[T, typ] by expanding it to typ here.

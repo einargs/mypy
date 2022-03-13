@@ -201,6 +201,35 @@ def b0(a0: Annotated[int, A, A > 10]) -> None:
     c: Annotated[int, C, C > 1] = f2(x)  # E: refinement type check failed
 [builtins fixtures/tuple.pyi]
 
+[case testRefinementRevealDoesNotInvalidate]
+from typing_extensions import Annotated
+from refinement import *
+
+def f0(v: Annotated[int, V, V > 0]) -> None:
+    return None
+
+def f1(v: Annotated[int, V]) -> Annotated[int, A, A == V]:
+    return v
+
+a: Annotated[int, A, A > 10] = 11
+reveal_type(a)  # N: Revealed type is "builtins.int{A: A > 10}"
+b: Annotated[int, B, B > 8] = a
+reveal_type(a)  # N: Revealed type is "builtins.int{A: A > 10}"
+c: Annotated[int, C, 5 < C] = a  # E: refinement type check failed
+
+
+x: Annotated[int, X, 3 < X] = 5
+reveal_type(x)  # N: Revealed type is "builtins.int{X: 3 < X}"
+y = x
+f0(x)  # E: refinement type check failed
+f1(y)
+reveal_type(y)  # N: Revealed type is "builtins.int{X: 3 < X}"
+# TODO: Ideally we would catch the fact that x is invalid here, instead of when
+# we use z.
+z = f1(x)
+f0(z)  # E: refinement type check failed
+[builtins fixtures/tuple.pyi]
+
 [case testRefinementExprStmt]
 from typing_extensions import Annotated
 from refinement import *
@@ -393,4 +422,16 @@ def f4(v: Annotated[Tuple[int, int], V, V[0] > 1, V[1] > 2]) -> None:
     return None
 
 f4(f2((3,3)))
+[builtins fixtures/primitives.pyi]
+
+[case testRefinementRSelf]
+from typing_extensions import Annotated
+from refinement import *
+
+class Test:
+    def __init__(self, x: Annotated[int, X]) -> Annotated[None, RSelf.x == X]:
+        self.x = x
+
+a: Annotated[Test, A, A.x > 10] = Test(11)
+b: Annotated[Test, B, A.x < 10] = Test(x=8)
 [builtins fixtures/primitives.pyi]

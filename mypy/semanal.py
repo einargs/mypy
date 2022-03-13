@@ -3087,8 +3087,7 @@ class SemanticAnalyzer(NodeVisitor[None],
 
         Return True if this is a RefinementVar declaration.
         """
-        # The inclusion of builtins.RefinementVar is just for the test stubs.
-        names = ("refinement.RefinementVar", "builtins.RefinementVar")
+        names = ("refinement.RefinementVar",)
 
         call = self.get_typevarlike_declaration(s, names)
         if call is None:
@@ -3102,6 +3101,10 @@ class SemanticAnalyzer(NodeVisitor[None],
 
         name = lvalue.name
         if not self.check_typevarlike_name(call, name, s):
+            return False
+
+        if name == "RSelf":
+            self.fail("Cannot name a RefinementVar RSelf", s)
             return False
 
         if len(call.args) > 1:

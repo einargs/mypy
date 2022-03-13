@@ -24,11 +24,14 @@ C = RefinementVar('C')
 T = TypeVar('T')
 S = TypeVar('S')
 
+
 def f0(a: T) -> T:
     return a
 
+
 def f1(a: T, b: S) -> Annotated[Tuple[T, S], V]:
     return (a, f0(b))
+
 
 class Conv2d:
     def __init__(self, in_channels, out_channels, kernel_size, stride):

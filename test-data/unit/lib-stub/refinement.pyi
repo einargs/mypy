@@ -3,6 +3,8 @@ from typing import Any
 class RefinementVar:
     def __init__(self, name: str): pass
 
+RSelf = object()
+
 V = RefinementVar('V')
 X = RefinementVar('X')
 Y = RefinementVar('Y')

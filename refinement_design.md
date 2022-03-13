@@ -121,6 +121,7 @@ IsCat(V))]:
 - inference of refinement types esp. for literals. This means taking `a = 1` and
   figuring out that the inferred type of `a` should be
   `Annotated[int, A, A == 1]`.
+- Can I remove `RefinementValue` from `mypy/types.py`?
 
 ## Needed tests
 - [ ] check invalidation of variables on:

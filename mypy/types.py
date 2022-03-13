@@ -391,7 +391,7 @@ class ProperType(Type):
     __slots__ = ()
 
 
-class RefinementExpr:
+class RefinementExpr(mypy.nodes.Context):
     __slots__ = ()
 
     def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
@@ -420,7 +420,8 @@ class RefinementLiteral(RefinementExpr):
 
     __slots__ = ('value',)
 
-    def __init__(self, value: int):
+    def __init__(self, value: int, line: int = -1, column: int = -1):
+        super().__init__(line, column)
         self.value = value
 
     def serialize(self) -> JsonDict:
@@ -450,8 +451,9 @@ class RefinementBinOp(RefinementExpr):
     def __init__(self,
             left: RefinementExpr,
             kind: RefinementBinOpKind,
-            right: RefinementExpr
-            ):
+            right: RefinementExpr,
+            line: int = -1, column: int = -1):
+        super().__init__(line, column)
         self.left = left
         self.kind = kind
         self.right = right
@@ -483,7 +485,9 @@ class RefinementTuple(RefinementExpr):
 
     __slots__ = ('items',)
 
-    def __init__(self, items: list[RefinementExpr]):
+    def __init__(self, items: list[RefinementExpr],
+            line: int = -1, column: int = -1):
+        super().__init__(line, column)
         self.items = items
 
     def serialize(self) -> JsonDict:
@@ -504,9 +508,11 @@ class RefinementVar(RefinementExpr):
 
     __slots__ = ('name', 'props')
 
-    def __init__(self, name: str, props: Bogus[list[VarProp]] = _dummy):
+    def __init__(self, name: str, props: Bogus[list[VarProp]] = _dummy,
+            line: int = -1, column: int = -1):
         if props is _dummy:
             props = []
+        super().__init__(line, column)
         self.name = name
         self.props = props
 
@@ -537,6 +543,36 @@ class RefinementVar(RefinementExpr):
         return prop_list_str(self.name, self.props)
 
 
+class RefinementSelf(RefinementExpr):
+    """Special variable representing self for use in `__init__`.
+    """
+    __slots__ = ('props',)
+
+    def __init__(self, props: Bogus[list[VarProp]] = _dummy,
+            line: int = -1, column: int = -1):
+        if props is _dummy:
+            props = []
+        super().__init__(line, column)
+        self.props = props
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstsance(other, RefinementSelf):
+            raise NotImplementedError
+        return self.props == other.props
+
+    def serialize(self) -> JsonDict:
+        return {'.class': 'RefinementSelf',
+                'props': self.props,
+                }
+
+    def deserialize(cls, data: JsonDict) -> 'RefinementSelf':
+        assert data['.class'] == 'RefinementSelf'
+        return RefinementSelf(data['props'])
+
+    def __repr__(self) -> str:
+        return prop_list_str("RSelf", self.props)
+
+
 RefinementValue: _TypeAlias = Union[RefinementVar, RefinementLiteral]
 
 
@@ -549,7 +585,7 @@ class ConstraintKind(enum.Enum):
     GT_EQ = enum.auto()  # >=
 
 
-class RefinementConstraint:
+class RefinementConstraint(mypy.nodes.Context):
     """A constraint on a base type. Can constraint integers, tuples of integers,
     or properties that are integers of tuples of integers.
     """
@@ -559,7 +595,10 @@ class RefinementConstraint:
     def __init__(self,
             left: RefinementExpr,
             kind: ConstraintKind,
-            right: RefinementExpr):
+            right: RefinementExpr,
+            line: int = -1,
+            column: int = -1):
+        super().__init__(line, column)
         self.left = left
         self.kind = kind
         self.right = right
@@ -649,7 +688,9 @@ class ConstraintSynType(ProperType):
 
     __slots__ = ('value',)
 
-    def __init__(self, value: RefinementConstraint):
+    def __init__(self, value: RefinementConstraint,
+            line: int = -1, column: int = -1):
+        super().__init__(line, column)
         self.value = value
 
 

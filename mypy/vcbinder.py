@@ -244,6 +244,7 @@ class VerificationBinder:
         """Invalidate a variable, forcing the creation of a new smt variable
         with no associated constraints the next time it is used.
         """
+        print("invalidate", var)
         if var in self.var_versions:
             del self.var_versions[var]
         if var in self.dependencies:
@@ -771,8 +772,11 @@ class Invalidator(ExpressionVisitor[None]):
         e.value.accept(self)
 
     def visit_call_expr(self, e: CallExpr) -> None:
-        e.callee.accept(self)
-        self.seq(e.args)
+        if e.analyzed:
+            e.analyzed.accept(self)
+        else:
+            e.callee.accept(self)
+            self.seq(e.args)
 
     def visit_slice_expr(self, e: SliceExpr) -> None:
         self.opt(e.begin_index)
