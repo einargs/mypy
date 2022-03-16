@@ -64,37 +64,45 @@ IsCat(V))]:
 ```
 
 # TODO
-## Next
-1. get tuple expressions to variables w/ constraints working
-2. get substitution of tuple expressions containing only integer literals into
-   refinement constraints working.
-3. get the kinks with free variables and tuple equality worked out. See the
-   TODOs in `testRefinementTupleTerm` for more information.
-3. figure out how the fuck I need to handle `__init__`
+## Tomorrow
+1. It looks like I broke floating variables and complex assignment tests.
+2. Write the pytorch stubs.
+3. Fix the RSelf bound variable hack I'm using right now.
+   - Develop refinement variables local to a given type for use in the RSelf
+     stuff?
+
+## Programmes
+- Generate equality constraints for non-int types by generating constraints for
+  all members of the type. This solves the tuple equality problem. This may use
+  Z3's data type capabilities; it may not.
+- General variable programme
+  - Overhaul the variable system so that bound variables aren't just strings.
+  - Develop diagnostics and pretty printing of variables.
+  - Maybe: Consolidate verification vars and refinement vars and such not into
+    a cohesive model of a syntax implemented alongside substitution functions
+    inside a separate module.
+- Develop a restricted python syntax of expressions ala Z3 that allows you to
+  define functions for use in refinement types.
+- Get type aliases and generics working for refinement types.
+- Maybe: automatic inference of equality constriants on RSelf for direct
+  assignments of arguments in constructors?
 
 ## General
+- It looks like z3 has tools for inspecting the ast and even substituting within
+  it -- see decl and substitute.
+- Overhaul the bound variable system and fix the clunky RSelf hack I have right
+  now.
 - Start using the type variable infrastructure to uniquely identify refinement
   variables.
   - This could help with e.g. one property referring to another property -- the
     refinement variables would be unique'd so that if a second property is
     brought in later, any constraints involving it on the first property snap
     into place.
-- Get constraints carrying over with free variables in function definitions.
-  See the TODO in `testRefinementTermArithmetic` for more details.
 - figure out when a variable with a refinement type can be invalidated.
   Assignment shouldn't invalidate it bc then it'll be checked.
   - I'm thinking
-- enable assignment to variables
-  * Add variables with refinement types to things.
-  * if the type of a variable is inferred and should be a refined type, make
-    sure it is.
-  * test multiple assignments
-  * currently I don't think this can handle adding refinement type info to
-    indexed lvalues.
-  * Get the ability to mutate variables working
 - I need to prefix the refinement variables with the module they're defined in.
-- make sure that return values of refined functions that are assigned to
-  variables have refined types inferred.
+  (Maybe?)
 - There's the possiblity for some cool interaction between refinements and
   the type of any length tuples, where refining them by equality or length could
   allow me to narrow the base type.
@@ -108,7 +116,6 @@ IsCat(V))]:
   the values passed into constructors. So knowing that `a = Container(value=1)`
   means that `a.shape == 1`. I think this can maybe be done with just post
   conditions?
-- get tuple literals working
 - get destructuring a tuple working
 - add predicate/control flow based refinement
 - debug tools to, e.g., show all constraints relevant to a refinement variable
@@ -124,12 +131,14 @@ IsCat(V))]:
 - Can I remove `RefinementValue` from `mypy/types.py`?
 
 ## Needed tests
+- [ ] Test how to deal with tuples of unknown arity? Does this require tuple
+  equality?
 - [ ] check invalidation of variables on:
   - [ ] assignment
   - [ ] use in an expression
   - [ ] when a property is invalidated
   - [ ] that a variable with a refined type is not invalidated by assignment
-        because that is checked.
+    because that is checked.
 - [ ] test refinement variable uniqueness
   - [ ] when inferring a new type from a return value.
 - [ ] test how this stuff interacts with overloaded functions
