@@ -14,7 +14,7 @@ from mypy.types import (
     TupleType, Instance, FunctionLike, Type, CallableType, TypeVarLikeType, Overloaded,
     TypeVarType, UninhabitedType, FormalArgument, UnionType, NoneType,
     AnyType, TypeOfAny, TypeType, ProperType, LiteralType, get_proper_type, get_proper_types,
-    copy_type, TypeAliasType, TypeQuery, ParamSpecType
+    copy_type, TypeAliasType, TypeQuery, ParamSpecType, BaseType,
 )
 from mypy.nodes import (
     FuncBase, FuncItem, FuncDef, OverloadedFuncDef, TypeInfo, ARG_STAR, ARG_STAR2, ARG_POS,
@@ -114,6 +114,12 @@ def class_callable(init_type: CallableType, info: TypeInfo, type_type: Instance,
     else:
         ret_type = default_ret_type
 
+    if isinstance(init_ret_type, BaseType) and init_ret_type.refinements:
+        assert isinstance(ret_type, BaseType)
+        # TODO: ideally I'd like to have some kind of special local-only
+        # refinement variables and translate RSelf to those, but instead we'll
+        # be hacky.
+        ret_type.refinements = init_ret_type.refinements
     callable_type = init_type.copy_modified(
         ret_type=ret_type, fallback=type_type, name=None, variables=variables,
         special_sig=special_sig)

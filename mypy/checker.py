@@ -1030,10 +1030,11 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     # TODO: This is just for debugging. If a function has
                     # arguments with refinements, this logs the names to give
                     # context for other logs.
-                    if (any(is_refined_type(a.variable.type)
+                    is_refined_func = (any(is_refined_type(a.variable.type)
                             for a in item.arguments if a.variable.type is not None)
-                            or is_refined_type(typ.ret_type)):
-                        print("\n" + item.name)
+                            or is_refined_type(typ.ret_type))
+                    if is_refined_func:
+                        print("\nstart", item.name)
                     with self.vc_binder_enter_function():
                         for arg in item.arguments:
                             aty: Optional[Type] = arg.variable.type
@@ -1041,6 +1042,15 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                                 self.vc_binder.add_argument(arg.variable.name, aty, ctx=arg)
 
                         self.accept(item.body)
+                        # This checks whether there is no ending return
+                        # statement, in which case we need to run our own
+                        # subsumption check.
+                        if not self.binder.is_unreachable():
+                            ret_type = self.return_types[-1]
+                            self.vc_binder.check_subsumption(
+                                    None, None, ret_type, ctx=defn)
+                    if is_refined_func:
+                        print("end", item.name + "\n")
                 unreachable = self.binder.is_unreachable()
 
             if self.options.warn_no_return and not unreachable:

@@ -2621,8 +2621,8 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
         def expr_str(e: RefinementExpr) -> str:
             if isinstance(e, RefinementTuple):
                 return "({})".format(", ".join(expr_str(e) for e in e.items))
-            elif isinstance(e, RefinementVar):
-                return ".".join([e.name] + e.props)
+            elif isinstance(e, (RefinementVar, RefinementSelf)):
+                return str(e)
             elif isinstance(e, RefinementBinOp):
                 if e.kind == RefinementBinOpKind.add:
                     kind = "+"
@@ -2637,6 +2637,9 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
                 return "{} {} {}".format(left, kind, right)
             elif isinstance(e, RefinementLiteral):
                 return str(e.value)
+            else:
+                assert False, "no other cases"
+                return str(e)
 
         def constraint_str(c: RefinementConstraint) -> str:
             left = expr_str(c.left)
@@ -2775,7 +2778,11 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
 
         s = '({})'.format(s)
 
-        if not isinstance(get_proper_type(t.ret_type), NoneType):
+        proper_ret_type = get_proper_type(t.ret_type)
+        if (not isinstance(proper_ret_type, NoneType)
+                or (proper_ret_type.refinements and
+                    (len(proper_ret_type.refinements.constraints) > 0
+                        or proper_ret_type.refinements.var))):
             if t.type_guard is not None:
                 s += ' -> TypeGuard[{}]'.format(t.type_guard.accept(self))
             else:

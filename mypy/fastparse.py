@@ -1418,6 +1418,8 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
         elif isinstance(node, ast3.Attribute):
             value = convert_sub_expr(node.value)
             if isinstance(value, (RefinementVar, RefinementSelf)):
+                if isinstance(value, RefinementSelf):
+                    print("Adding", node.attr, "to", value)
                 value.props.append(node.attr)
                 return value
             else:
@@ -1431,8 +1433,10 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
                 return value
         elif isinstance(node, ast3.Name):
             if node.id == "RSelf":
+                print("found RSelf")
                 return RefinementSelf(line=node.lineno, column=node.col_offset)
             else:
+                print("found refinement var", node.id)
                 return RefinementVar(node.id,
                         line=node.lineno, column=node.col_offset)
         else:
@@ -1643,7 +1647,8 @@ class TypeConverter:
         if left is None or right is None:
             return self.invalid_type(n)
         return ConstraintSynType(
-                RefinementConstraint(left, kind, right),
+                RefinementConstraint(left, kind, right,
+                    line=self.line, column=n.col_offset),
                 line=self.line,
                 column=n.col_offset)
 

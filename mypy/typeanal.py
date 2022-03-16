@@ -371,7 +371,7 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
 
             if not isinstance(root, BaseType):
                 self.fail("Only BaseTypes can have refinement annotations",
-                        root)
+                        t)
                 return AnyType(TypeOfAny.from_error)
 
             if root.refinements is not None:
@@ -407,6 +407,7 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                     return AnyType(TypeOfAny.from_error)
 
             root.refinements = RefinementInfo(local_var, constraints)
+            print("root", root)
 
             return root
         elif fullname in ('typing_extensions.Required', 'typing.Required'):

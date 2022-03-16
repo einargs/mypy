@@ -10,7 +10,7 @@ from mypy.types import (
     BaseType, RefinementConstraint, RefinementExpr, ConstraintKind,
     RefinementLiteral, RefinementVar, RefinementTuple, RefinementValue,
     RefinementBinOpKind, RefinementBinOp, Instance, ProperType, TupleType,
-    TypeVarType,
+    TypeVarType, RefinementSelf,
 )
 from mypy.nodes import (
     Expression, ComparisonExpr, OpExpr, MemberExpr, UnaryExpr, StarExpr, IndexExpr,
@@ -214,6 +214,9 @@ class VerificationBinder:
         self.dependencies: Dict[VerificationVar, Set[VerificationVar]] = {}
 
         # Maps bound refinement variable names to term variables.
+        # TODO: change from string to a tagged union, as for now we're using
+        # the "RSelf" string to deal with RSelf, which should be safe, but we'd
+        # rather not.
         self.bound_var_to_name: Dict[str, VerificationVar] = {}
 
     def add_constraints(self, constraints: list[SMTConstraint]) -> None:
@@ -244,7 +247,6 @@ class VerificationBinder:
         """Invalidate a variable, forcing the creation of a new smt variable
         with no associated constraints the next time it is used.
         """
-        print("invalidate", var)
         if var in self.var_versions:
             del self.var_versions[var]
         if var in self.dependencies:
@@ -256,36 +258,6 @@ class VerificationBinder:
         """
         invalidator = Invalidator(self)
         expr.accept(invalidator)
-
-    def translate_expr(self, expr: RefinementExpr,
-            *, ext_props: Optional[list[VarProp]] = None) -> SMTExpr:
-        if ext_props is None:
-            ext_props = []
-        if isinstance(expr, RefinementLiteral):
-            return expr.value
-        elif isinstance(expr, RefinementBinOp):
-            left = self.translate_expr(expr.left)
-            right = self.translate_expr(expr.right)
-            if expr.kind == RefinementBinOpKind.add:
-                return left + right
-            elif expr.kind == RefinementBinOpKind.sub:
-                return left - right
-            elif expr.kind == RefinementBinOpKind.mult:
-                return left * right
-            elif expr.kind == RefinementBinOpKind.floor_div:
-                return left / right
-        elif isinstance(expr, RefinementVar):
-            # Resolve anything where we have a term variable m, but we use the
-            # refinement variable R to refer to it in constraints.
-            default_var = RealVar(expr.name)
-            base = self.bound_var_to_name.get(expr.name, default_var)
-            var = base.extend(expr.props + ext_props)
-            for sv in var.subvars():
-                self.dependencies.setdefault(sv, set()).add(var)
-
-            return self.get_smt_var(var)
-        else:
-            assert False, "Should not be passed"
 
     @contextmanager
     def var_binding(self, ref_var: Optional[str], term_var: VerificationVar) -> Iterator[None]:
@@ -321,9 +293,57 @@ class VerificationBinder:
             else:
                 self.bound_var_to_name[ref_var] = old
 
+    def translate_expr(self, expr: RefinementExpr,
+            *, ext_props: Optional[list[VarProp]] = None) -> SMTExpr:
+        """Tranlsate a refinement expression into an SMT expression the smt
+        solver can use.
+        """
+        if ext_props is None:
+            ext_props = []
+        if isinstance(expr, RefinementLiteral):
+            return expr.value
+        elif isinstance(expr, RefinementBinOp):
+            left = self.translate_expr(expr.left)
+            right = self.translate_expr(expr.right)
+            if expr.kind == RefinementBinOpKind.add:
+                return left + right
+            elif expr.kind == RefinementBinOpKind.sub:
+                return left - right
+            elif expr.kind == RefinementBinOpKind.mult:
+                return left * right
+            elif expr.kind == RefinementBinOpKind.floor_div:
+                return left / right
+        elif isinstance(expr, RefinementSelf):
+            if "RSelf" in self.bound_var_to_name:
+                # This means that we've bound RSelf to a specific variable, so
+                # we're checking a call site usage or something.
+                var = self.bound_var_to_name["RSelf"].extend(
+                        ext_props + expr.props)
+            else:
+                # Otherwise we're checking the body of the function containing
+                # this.
+                var = RealVar("self", expr.props)
+            return self.get_smt_var(var)
+        elif isinstance(expr, RefinementVar):
+            # Resolve anything where we have a term variable m, but we use the
+            # refinement variable R to refer to it in constraints.
+            default_var = RealVar(expr.name)
+            base = self.bound_var_to_name.get(expr.name, default_var)
+            var = base.extend(ext_props + expr.props)
+            # TODO: I changed the above from the below. Write a test to check
+            # this.
+            # var = base.extend(expr.props + ext_props)
+            for sv in var.subvars():
+                self.dependencies.setdefault(sv, set()).add(var)
+
+            return self.get_smt_var(var)
+        else:
+            assert False, "Should not be passed"
+
     def translate_to_constraints(self,
             con: RefinementConstraint,
-            *, ctx: Context) -> list[SMTConstraint]:
+            *, ctx: Context
+            ) -> list[SMTConstraint]:
         """Translate a refinement constraint to smt solver constraints,
         splitting it into multiple constraints if it contains a refinement
         tuple.
@@ -471,6 +491,11 @@ class VerificationBinder:
         # OTOH maybe that's okay because it'll be caught when it's defined?
         if ret_type.refinements.var is not None:
             var_bindings.append((ret_type.refinements.var.name, fresh_var))
+        else:
+            # TODO: find better way of doing this (when I switch to using proper
+            # tagged enums for bound vars/otherwise overhaul bound vars). Right now
+            # we just bind RSelf because it won't be used unless it needs to be.
+            var_bindings.append(("RSelf", fresh_var))
         with self.var_bindings(var_bindings):
             cons = []
             for c in ret_type.refinements.constraints:
@@ -668,7 +693,7 @@ class VerificationBinder:
         FAIL_MSG = "refinement type check failed"
 
         if expr is None or info.var is None:
-            assert expr is not None or info.var is not None
+            # assert expr is not None or info.var is not None
 
             constraints = [smt_c
                     for c in info.constraints
@@ -678,12 +703,10 @@ class VerificationBinder:
             return
         else:
             var, has_sent_error = self.var_from_expr(expr, expr_type)
-            print("var", var, "for", expr)
             if var is None:
                 if not has_sent_error:
                     self.fail('could not understand expression', ctx)
                 return
-            print("var binding", info.var.name, "to", var)
             with self.var_binding(info.var.name, var):
                 constraints = [smt_c
                         for c in info.constraints
@@ -691,6 +714,12 @@ class VerificationBinder:
                 if not self.check_implication(constraints):
                     self.fail(FAIL_MSG, ctx)
                 return
+
+    def check_init(self, target: Type, *, ctx: Context) -> None:
+        """This is a specialized version of check_subsumption for the
+        ending of `__init__`.
+        """
+        self.check_subsumption(None, None, target, ctx=ctx)
 
 
 class Invalidator(ExpressionVisitor[None]):

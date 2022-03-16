@@ -428,10 +428,26 @@ f4(f2((3,3)))
 from typing_extensions import Annotated
 from refinement import *
 
-class Test:
-    def __init__(self, x: Annotated[int, X]) -> Annotated[None, RSelf.x == X]:
+def f0(v: Annotated[int, V]) -> Annotated[int, A, A == V]:
+    return v
+
+class Test0:
+    def __init__(self, x: Annotated[int, X, X > 2]) -> Annotated[None, RSelf.x == X]:
+        self.x = x
+        b: Annotated[int, B, B > 0] = self.x
+
+def block0() -> None:
+    a: Annotated[Test0, A, A.x > 10] = Test0(11)
+    b: Annotated[Test0, B, B.x < 10] = Test0(x=8)
+    
+    # TODO: get the below working
+    # c: Annotated[Test0, C, C.x > 4] = f0(Test0(6))
+
+class Test1:
+    def __init__(self: 'Test1', x: Annotated[int, X, X > 2]) -> Annotated[None, RSelf.x == X, RSelf.x > 0]:
         self.x = x
 
-a: Annotated[Test, A, A.x > 10] = Test(11)
-b: Annotated[Test, B, A.x < 10] = Test(x=8)
+def block1() -> None:
+    a: Annotated[Test1, A, A.x > 10] = Test1(11)
+    b: Annotated[Test1, B, B.x < 10] = Test1(x=8)
 [builtins fixtures/primitives.pyi]
