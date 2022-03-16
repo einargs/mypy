@@ -318,7 +318,7 @@ class VerificationBinder:
                 # This means that we've bound RSelf to a specific variable, so
                 # we're checking a call site usage or something.
                 var = self.bound_var_to_name["RSelf"].extend(
-                        ext_props + expr.props)
+                        expr.props + ext_props)
             else:
                 # Otherwise we're checking the body of the function containing
                 # this.
@@ -329,10 +329,7 @@ class VerificationBinder:
             # refinement variable R to refer to it in constraints.
             default_var = RealVar(expr.name)
             base = self.bound_var_to_name.get(expr.name, default_var)
-            var = base.extend(ext_props + expr.props)
-            # TODO: I changed the above from the below. Write a test to check
-            # this.
-            # var = base.extend(expr.props + ext_props)
+            var = base.extend(expr.props + ext_props)
             for sv in var.subvars():
                 self.dependencies.setdefault(sv, set()).add(var)
 
@@ -340,10 +337,11 @@ class VerificationBinder:
         else:
             assert False, "Should not be passed"
 
-    def translate_to_constraints(self,
+    def translate_to_constraints(
+            self,
             con: RefinementConstraint,
             *, ctx: Context
-            ) -> list[SMTConstraint]:
+    ) -> list[SMTConstraint]:
         """Translate a refinement constraint to smt solver constraints,
         splitting it into multiple constraints if it contains a refinement
         tuple.

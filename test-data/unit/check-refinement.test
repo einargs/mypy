@@ -122,6 +122,12 @@ L = RefinementVar('L')
 M = RefinementVar('M')
 N = RefinementVar('N')
 
+def g0(
+        m: Annotated[array, A, A.shape == (X, Y)]
+) -> Annotated[int, V, V == Y]:
+    tup: Annotated[Tuple[int, ...], L, L == (X, Y)] = m.shape
+    return tup[1]
+
 def f0(
         m1: Annotated[array, A, A.shape == (X, Y)],
         m2: Annotated[array, B, B.shape == (Y, Z)],
