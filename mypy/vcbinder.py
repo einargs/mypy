@@ -657,17 +657,15 @@ class VerificationBinder:
         if constraints == []:
             return True
 
-        print("Variables:", self.smt_variables)
-        print("Given:", self.constraints)
-        print("Goal:", constraints)
+        # print("Variables:", self.smt_variables)
+        # print("Given:", self.constraints)
+        # print("Goal:", constraints)
 
         # Basically, in order to prove that the constraints are "valid" --
         # evaluates to true for all possible variable values -- we put a not
         # around the condition and then check that conditions is unsatisfiable
         # -- that we have no way it can be *untrue*.
         cond = z3.Not(z3.And(constraints))
-        print("cond", cond)
-        print("solver", self.smt_solver)
         try:
             result = self.smt_solver.check(cond)
         except z3.Z3Exception as exc:

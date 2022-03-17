@@ -452,3 +452,13 @@ def block1() -> None:
     a: Annotated[Test1, A, A.x > 10] = Test1(11)
     b: Annotated[Test1, B, B.x < 10] = Test1(x=8)
 [builtins fixtures/primitives.pyi]
+
+[case testRefinementFinal]
+from typing_extensions import Annotated
+from refinement import *
+
+class Test0:
+    a: Final[int]
+
+# TODO:
+[builtins fixtures/primitives.pyi]

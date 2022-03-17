@@ -65,6 +65,7 @@ IsCat(V))]:
 
 # TODO
 ## Tomorrow
+0. Get RSelf working for methods.
 1. Figure out final stuff.
 2. Write the pytorch stubs.
 3. Figure out default variables.
