@@ -3,22 +3,28 @@ import torch
 from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
+from typing_extensions import Annotated
+from refinement import RefinementVar
+
+T = RefinementVar('T')
+S = RefinementVar('S')
 
 class Net(nn.Module):
     def __init__(self) -> None:
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, 3, 1)
-        self.conv2 = nn.Conv2d(32, 64, 3, 1)
+        self.conv1 = nn.Conv2d(1, 32, (3,3), (1,1))
+        self.conv2 = nn.Conv2d(32, 64, (3,3), (1,1))
         self.dropout1 = nn.Dropout(0.25)
         self.dropout2 = nn.Dropout(0.5)
         self.fc1 = nn.Linear(9216, 128)
         self.fc2 = nn.Linear(128, 10)
 
-    def forward(self, x: Tensor) -> Tensor:
-        x = self.conv1(x)
+    def forward(self, y: Annotated[Tensor, T, T.shape[0] == 64, T.shape[1] == 64]) -> Tensor:
+        x = self.conv1(y)
         x = F.relu(x)
         x = self.conv2(x)
         x = F.relu(x)
+        reveal_type(x)
         x = F.max_pool2d(x, 2)
         x = self.dropout1(x)
         x = torch.flatten(x, 1)

@@ -98,6 +98,7 @@ typecheck_files = [
     'check-singledispatch.test',
     'check-slots.test',
     'check-formatting.test',
+    'check-torch-refinement.test',
 ]
 
 # Tests that use Python 3.8-only AST features (like expression-scoped ignores):

@@ -65,9 +65,10 @@ IsCat(V))]:
 
 # TODO
 ## Tomorrow
-1. It looks like I broke floating variables and complex assignment tests.
+1. Figure out final stuff.
 2. Write the pytorch stubs.
-3. Fix the RSelf bound variable hack I'm using right now.
+3. Figure out default variables.
+4. Fix the RSelf bound variable hack I'm using right now.
    - Develop refinement variables local to a given type for use in the RSelf
      stuff?
 

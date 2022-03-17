@@ -202,7 +202,7 @@ class VerificationBinder:
         self.smt_variables: list[SMTVar] = []
 
         # Maps variable names to the smt variables
-        self.var_versions: Dict[VerificationVar, SMTVar] = {}
+        self.var_versions: Dict[VerificationVar, SMTExpr] = {}
 
         # Tracks what expressions have had constraints "loaded" from their
         # types.
@@ -234,7 +234,7 @@ class VerificationBinder:
         self.smt_variables.append(smt_var)
         return smt_var
 
-    def get_smt_var(self, var: VerificationVar) -> SMTVar:
+    def get_smt_expr(self, var: VerificationVar) -> SMTExpr:
         if var in self.var_versions:
             return self.var_versions[var]
         else:
@@ -301,7 +301,7 @@ class VerificationBinder:
         if ext_props is None:
             ext_props = []
         if isinstance(expr, RefinementLiteral):
-            return expr.value
+            return z3.IntVal(expr.value, ctx=self.smt_context)
         elif isinstance(expr, RefinementBinOp):
             left = self.translate_expr(expr.left)
             right = self.translate_expr(expr.right)
@@ -323,7 +323,7 @@ class VerificationBinder:
                 # Otherwise we're checking the body of the function containing
                 # this.
                 var = RealVar("self", expr.props)
-            return self.get_smt_var(var)
+            return self.get_smt_expr(var)
         elif isinstance(expr, RefinementVar):
             # Resolve anything where we have a term variable m, but we use the
             # refinement variable R to refer to it in constraints.
@@ -333,7 +333,7 @@ class VerificationBinder:
             for sv in var.subvars():
                 self.dependencies.setdefault(sv, set()).add(var)
 
-            return self.get_smt_var(var)
+            return self.get_smt_expr(var)
         else:
             assert False, "Should not be passed"
 
@@ -386,22 +386,29 @@ class VerificationBinder:
             kind: ConstraintKind,
             right: SMTExpr,
             *, ctx: Context) -> SMTConstraint:
-        if not isinstance(left, z3.ArithRef) and not isinstance(right, z3.ArithRef):
-            self.fail("A refinement constraint must include at least one "
-                    "refinement variable", ctx)
+        # if not isinstance(left, z3.ArithRef) and not isinstance(right, z3.ArithRef):
+        #     self.fail("A refinement constraint must include at least one "
+        #             "refinement variable", ctx)
 
         if kind == ConstraintKind.EQ:
-            return left == right
+            result = left == right
         elif kind == ConstraintKind.NOT_EQ:
-            return left != right
+            result = left != right
         elif kind == ConstraintKind.LT:
-            return left < right
+            result = left < right
         elif kind == ConstraintKind.LT_EQ:
-            return left <= right
+            result =left <= right
         elif kind == ConstraintKind.GT:
-            return left > right
+            result = left > right
         elif kind == ConstraintKind.GT_EQ:
-            return left >= right
+            result = left >= right
+        else:
+            assert False, "Impossible!"
+
+        if isinstance(result, bool):
+            return z3.BoolVal(result, ctx=self.smt_context)
+        else:
+            return result
 
     def add_bound_var(
             self,
@@ -549,13 +556,13 @@ class VerificationBinder:
         elif (is_refined_type(expr_type)
                 and expr_type.refinements
                 and expr_type.refinements.verification_var):
-            smt_var = self.get_smt_var(expr_type.refinements.verification_var)
+            smt_var = self.get_smt_expr(expr_type.refinements.verification_var)
             print("smt_var", smt_var)
             return smt_var
         else:
             var = self.real_var_from_expr(expr, expr_type)
             if var:
-                return self.get_smt_var(var)
+                return self.get_smt_expr(var)
 
         return None
 
@@ -582,7 +589,7 @@ class VerificationBinder:
             return None
 
         fresh_var = self.fresh_verification_var()
-        smt_var = self.get_smt_var(fresh_var)
+        smt_var = self.get_smt_expr(fresh_var)
         self.add_constraints([smt_var == smt_expr])
 
         return fresh_var
@@ -603,8 +610,7 @@ class VerificationBinder:
         """
         if isinstance(expr, IntExpr):
             fresh_var = self.fresh_verification_var()
-            smt_var = self.get_smt_var(fresh_var)
-            self.add_constraints([smt_var == expr.value])
+            self.var_versions[fresh_var] = expr.value
             return fresh_var, False
         elif isinstance(expr, CallExpr):
             assert expr_type is not None, "I don't think this should happen?"
@@ -616,7 +622,7 @@ class VerificationBinder:
         elif isinstance(expr, TupleExpr):
             var = self.fresh_verification_var()
             has_sent_error = False
-            for i,item in enumerate(expr.items):
+            for i, item in enumerate(expr.items):
                 if isinstance(expr_type, TupleType):
                     idx_type = expr_type.items[i]
                 else:
@@ -626,8 +632,8 @@ class VerificationBinder:
                 has_sent_error = has_sent_error or idx_error
                 if item_var is None:
                     continue
-                item_smt = self.get_smt_var(item_var)
-                idx_smt = self.get_smt_var(var_idx)
+                item_smt = self.get_smt_expr(item_var)
+                idx_smt = self.get_smt_expr(var_idx)
                 self.add_constraints([idx_smt == item_smt])
             return var, has_sent_error
             # self.fail("Tuple expressions are not yet implemented", expr)
@@ -660,7 +666,13 @@ class VerificationBinder:
         # around the condition and then check that conditions is unsatisfiable
         # -- that we have no way it can be *untrue*.
         cond = z3.Not(z3.And(constraints))
-        result = self.smt_solver.check(cond)
+        print("cond", cond)
+        print("solver", self.smt_solver)
+        try:
+            result = self.smt_solver.check(cond)
+        except z3.Z3Exception as exc:
+            print("exception:", exc)
+            return False
         print("Result:", "valid" if result == z3.unsat else "invalid")
         print()
         return result == z3.unsat

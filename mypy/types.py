@@ -693,6 +693,10 @@ class ConstraintSynType(ProperType):
         super().__init__(line, column)
         self.value = value
 
+    def accept(self, visitor: 'TypeVisitor[T]') -> T:
+        # TODO: figure out a better way to handle this.
+        raise RuntimeError('Most likely Annotated was not imported.')
+
 
 class TypeVarId:
     # A type variable is uniquely identified by its raw id and meta level.
