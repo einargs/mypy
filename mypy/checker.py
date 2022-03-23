@@ -2381,6 +2381,9 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 rvalue_type = self.expr_checker.accept(rvalue)
                 # Now we invalidate all the refinement variables after checking
                 self.vc_binder.invalidate_vars_in_expr(rvalue)
+                if isinstance(rvalue_type, BaseType) and rvalue_type.refinements:
+                    new_ref_info = rvalue_type.refinements.clear_verification_var()
+                    rvalue_type = rvalue_type.copy_with_refinements(new_ref_info)
                 # Add this to the refinement types
                 self.vc_binder.add_inferred_lvalue(lvalue, rvalue_type)
 

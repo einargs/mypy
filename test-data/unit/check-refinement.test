@@ -453,6 +453,49 @@ def block1() -> None:
     b: Annotated[Test1, B, B.x < 10] = Test1(x=8)
 [builtins fixtures/primitives.pyi]
 
+[case testRefinementStoredRSelf]
+from typing_extensions import Annotated
+from refinement import *
+
+SELF = RefinementVar('SELF')
+
+class Prop0:
+    def __init__(self: 'Prop0', x: Annotated[int, X]) -> Annotated[None, RSelf.x == X]:
+        self.x = x
+
+class Test0:
+    def __init__(self, c: Annotated[int, C]) -> Annotated[None, RSelf.c == C]:
+        self.prop = Prop0(2)
+        self.c = c
+
+    def useX(self: Annotated['Test0', SELF], a: Annotated[int, A]) -> Annotated[int, V, V == SELF.c * A * SELF.prop.x]:
+        otherProp: Annotated[Prop0, X, X.x == 2] = self.prop
+        # TODO: return to this once I have constants and post conditions
+        # implemented.
+        return self.c * a * self.prop.x
+
+    def __call__(self: Annotated['Test0', SELF]) -> Annotated[int, V, V == SELF.c * 2]:
+        return self.c * 2
+
+def block0() -> Annotated[int, X]:
+    test = Test0(2)
+    a: Annotated[int, A, A == 8] = test.useX(2)
+
+    return 0
+
+class Thing:
+    prop: int
+
+def f0() -> Annotated[Thing, V, V.prop == 2]: ...
+
+def block1() -> Annotated[int, X, X == 1]:
+    test = Test0(2)
+    b: Annotated[int, B, B == 4] = test()
+
+    return 0
+[builtins fixtures/ops.pyi]
+
+
 [case testRefinementFinal]
 from typing_extensions import Annotated
 from refinement import *

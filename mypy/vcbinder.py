@@ -78,6 +78,7 @@ class VerificationVar:
         for p in self.props[:-1]:
             props.append(p)
             vars.append(self.copy_base(props.copy()))
+        vars.reverse()
         return vars
 
 
@@ -195,9 +196,6 @@ class VerificationBinder:
         self.smt_context: z3.Context = z3.Context()
         self.smt_solver: z3.Solver = z3.Solver(ctx=self.smt_context)
 
-        # This will contain all of the constraints on smt variables.
-        self.constraints: list[SMTConstraint] = []
-
         # This contains a list of all of the smt variables.
         self.smt_variables: list[SMTVar] = []
 
@@ -219,9 +217,34 @@ class VerificationBinder:
         # rather not.
         self.bound_var_to_name: Dict[str, VerificationVar] = {}
 
-    def add_constraints(self, constraints: list[SMTConstraint]) -> None:
-        self.constraints += constraints
+    def add_smt_constraints(
+            self,
+            constraints: list[SMTConstraint]
+    ) -> None:
+        print("adding constraints", constraints)
         self.smt_solver.add(constraints)
+
+    def add_constraints(
+            self,
+            constraints: list[RefinementConstraint],
+            *, ctx: Context
+    ) -> None:
+        cons = self.translate_all(constraints, ctx=ctx)
+        self.add_smt_constraints(cons)
+
+    def save_dependencies(self, var: VerificationVar) -> None:
+        # This accumulates the sub variables as we go, so that if we have:
+        # a.b.c.d, then for a.b.c we'll add d, and a.b we'll add c and d, etc.
+        acc_vars = set((var,))
+        for sv in var.subvars():
+            sv_deps = self.dependencies.setdefault(sv, set())
+            sv_deps |= acc_vars
+            acc_vars.add(sv)
+
+    def touch(self, var: VerificationVar) -> None:
+        self.has_been_touched.add(var)
+        for sv in var.subvars():
+            self.has_been_touched.add(sv)
 
     def fresh_verification_var(self) -> FreshVar:
         self.next_id += 1
@@ -235,12 +258,13 @@ class VerificationBinder:
         return smt_var
 
     def get_smt_expr(self, var: VerificationVar) -> SMTExpr:
+        self.save_dependencies(var)
         if var in self.var_versions:
             return self.var_versions[var]
         else:
             fresh_var = self.fresh_smt_var(var)
             self.var_versions[var] = fresh_var
-            self.has_been_touched.add(var)
+            self.touch(var)
             return fresh_var
 
     def invalidate_var(self, var: VerificationVar) -> None:
@@ -322,7 +346,8 @@ class VerificationBinder:
             else:
                 # Otherwise we're checking the body of the function containing
                 # this.
-                var = RealVar("self", expr.props)
+                var = RealVar("self", expr.props + ext_props)
+            self.save_dependencies(var)
             return self.get_smt_expr(var)
         elif isinstance(expr, RefinementVar):
             # Resolve anything where we have a term variable m, but we use the
@@ -330,12 +355,20 @@ class VerificationBinder:
             default_var = RealVar(expr.name)
             base = self.bound_var_to_name.get(expr.name, default_var)
             var = base.extend(expr.props + ext_props)
-            for sv in var.subvars():
-                self.dependencies.setdefault(sv, set()).add(var)
+            self.save_dependencies(var)
 
             return self.get_smt_expr(var)
         else:
             assert False, "Should not be passed"
+
+    def translate_all(
+            self,
+            constraints: list[RefinementConstraint],
+            *, ctx: Context
+    ) -> list[SMTConstraint]:
+        return [smt_c
+                for c in constraints
+                for smt_c in self.translate_to_constraints(c, ctx=ctx)]
 
     def translate_to_constraints(
             self,
@@ -397,7 +430,7 @@ class VerificationBinder:
         elif kind == ConstraintKind.LT:
             result = left < right
         elif kind == ConstraintKind.LT_EQ:
-            result =left <= right
+            result = left <= right
         elif kind == ConstraintKind.GT:
             result = left > right
         elif kind == ConstraintKind.GT_EQ:
@@ -442,16 +475,13 @@ class VerificationBinder:
         if info.var is not None:
             self.add_bound_var(var, info.var.name, ctx=ctx)
 
-        for c in info.constraints:
-            cons = self.translate_to_constraints(c, ctx=ctx)
-            self.add_constraints(cons)
+        self.add_constraints(info.constraints, ctx=ctx)
 
     def add_argument(self, arg_name: str, typ: Type, *, ctx: Context) -> None:
         var = RealVar(arg_name)
         self.add_var(var, typ, ctx=ctx)
 
     def add_lvalue(self, lvalue: Lvalue, typ: Type) -> None:
-        # print("known type", typ, "for", lvalue)
         var = to_real_var(lvalue)
         if var is None:
             return
@@ -466,13 +496,16 @@ class VerificationBinder:
             return
         info = typ.refinements
         var = to_real_var(lvalue)
+        print("add_inferred_lvalue::var", var)
         if var is None:
             return
-        ref_var = info.var.name if info.var else None
-        with self.var_binding(ref_var, var):
-            for c in info.constraints:
-                cons = self.translate_to_constraints(c, ctx=lvalue)
-                self.add_constraints(cons)
+        bindings: list[tuple[str, VerificationVar]] = [
+                ("RSelf", var)
+                ]
+        if info.var:
+            bindings.append((info.var.name, var))
+        with self.var_bindings(bindings):
+            self.add_constraints(info.constraints, ctx=lvalue)
 
     def fail(self, msg: str, context: Context) -> None:
         self.msg.fail(msg, context)
@@ -484,6 +517,8 @@ class VerificationBinder:
             ctx: Context
     ) -> VerificationVar:
         assert ret_type.refinements is not None
+
+        print("var_for_call_expr::bindings", bindings)
 
         fresh_var = self.fresh_verification_var()
         var_bindings: list[tuple[str, VerificationVar]] = []
@@ -502,10 +537,7 @@ class VerificationBinder:
             # we just bind RSelf because it won't be used unless it needs to be.
             var_bindings.append(("RSelf", fresh_var))
         with self.var_bindings(var_bindings):
-            cons = []
-            for c in ret_type.refinements.constraints:
-                cons += self.translate_to_constraints(c, ctx=ctx)
-            self.add_constraints(cons)
+            self.add_constraints(ret_type.refinements.constraints, ctx=ctx)
         return fresh_var
 
     def real_var_from_expr(
@@ -530,16 +562,19 @@ class VerificationBinder:
         # TODO check that other stuff doesn't somehow get added before type
         # constraints can be added.
         if is_refined_type(expr_type) and var not in self.has_been_touched:
+            self.has_been_touched.add(var)
             assert expr_type.refinements, "guarenteed by is_refined_type"
-            if expr_type.refinements.var is None:
-                ref_var = None
-            else:
-                ref_var = expr_type.refinements.var.name
+            var_bindings: list[tuple[str, VerificationVar]] = [
+                    # TODO: this is kind of a hack. Ideally I would translate
+                    # RSelf to some kind of local refinement variable or
+                    # something.
+                    ("RSelf", var)
+                    ]
+            if (ref_var := expr_type.refinements.var) is not None:
+                var_bindings.append((ref_var.name, var))
 
-            with self.var_binding(ref_var, var):
-                for c in expr_type.refinements.constraints:
-                    cons = self.translate_to_constraints(c, ctx=expr)
-                    self.add_constraints(cons)
+            with self.var_bindings(var_bindings):
+                self.add_constraints(expr_type.refinements.constraints, ctx=expr)
 
         return var
 
@@ -590,7 +625,7 @@ class VerificationBinder:
 
         fresh_var = self.fresh_verification_var()
         smt_var = self.get_smt_expr(fresh_var)
-        self.add_constraints([smt_var == smt_expr])
+        self.add_smt_constraints([smt_var == smt_expr])
 
         return fresh_var
 
@@ -634,16 +669,17 @@ class VerificationBinder:
                     continue
                 item_smt = self.get_smt_expr(item_var)
                 idx_smt = self.get_smt_expr(var_idx)
-                self.add_constraints([idx_smt == item_smt])
+                self.add_smt_constraints([idx_smt == item_smt])
             return var, has_sent_error
-            # self.fail("Tuple expressions are not yet implemented", expr)
-            # return None, True
         elif (is_refined_type(expr_type)
                 and expr_type.refinements
                 and expr_type.refinements.verification_var):
+            print("verification_var:", expr_type.refinements.verification_var)
             return expr_type.refinements.verification_var, False
         else:
+            print("{entering real_var_from_expr from var_from_expr")
             var = self.real_var_from_expr(expr, expr_type)
+            print("}leaving real_var_from_expr from var_from_expr")
             return var, False
 
     def check_implication(self, constraints: list[SMTConstraint]) -> bool:
@@ -657,9 +693,9 @@ class VerificationBinder:
         if constraints == []:
             return True
 
-        # print("Variables:", self.smt_variables)
-        # print("Given:", self.constraints)
-        # print("Goal:", constraints)
+        print("Variables:", self.smt_variables)
+        print("Given:", self.smt_solver)
+        print("Goal:", constraints)
 
         # Basically, in order to prove that the constraints are "valid" --
         # evaluates to true for all possible variable values -- we put a not
@@ -672,6 +708,8 @@ class VerificationBinder:
             print("exception:", exc)
             return False
         print("Result:", "valid" if result == z3.unsat else "invalid")
+        if result == z3.sat:
+            print("Counter example:", self.smt_solver.model())
         print()
         return result == z3.unsat
 
@@ -690,6 +728,8 @@ class VerificationBinder:
         the associated `VCConstraint`s, do the `VCConstraint`s of the new type
         hold?
         """
+        # TODO: this means that we never deal with expr_type being None. Is that
+        # right? Changing it gives errors, so...
         if not (isinstance(expr_type, BaseType)
                 and isinstance(target, BaseType)):
             return
@@ -703,9 +743,7 @@ class VerificationBinder:
         if expr is None or info.var is None:
             # assert expr is not None or info.var is not None
 
-            constraints = [smt_c
-                    for c in info.constraints
-                    for smt_c in self.translate_to_constraints(c, ctx=ctx)]
+            constraints = self.translate_all(info.constraints, ctx=ctx)
             if not self.check_implication(constraints):
                 self.fail(FAIL_MSG, ctx)
             return
@@ -716,9 +754,7 @@ class VerificationBinder:
                     self.fail('could not understand expression', ctx)
                 return
             with self.var_binding(info.var.name, var):
-                constraints = [smt_c
-                        for c in info.constraints
-                        for smt_c in self.translate_to_constraints(c, ctx=ctx)]
+                constraints = self.translate_all(info.constraints, ctx=ctx)
                 if not self.check_implication(constraints):
                     self.fail(FAIL_MSG, ctx)
                 return

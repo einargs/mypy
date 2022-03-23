@@ -652,6 +652,9 @@ class RefinementInfo:
                 RefinementVar.deserialize(data['var']),
                 [RefinementConstraint.deserialize(c) for c in data['constraints']])
 
+    def clear_verification_var(self) -> 'RefinementInfo':
+        return RefinementInfo(self.var, self.constraints)
+
     def substitute(
             self,
             vc_var: 'VerificationVar',
@@ -1510,6 +1513,7 @@ class CallableType(FunctionLike):
                                     # instantiation?
                  'bound_args',  # Bound type args, mostly unused but may be useful for
                                 # tools that consume mypy ASTs
+                 'erased_args', # The original types of bound_args.
                  'def_extras',  # Information about original definition we want to serialize.
                                 # This is used for more detailed error messages.
                  'type_guard',  # T, if -> TypeGuard[T] (ret_type is bool in this case).
@@ -1531,6 +1535,7 @@ class CallableType(FunctionLike):
                  special_sig: Optional[str] = None,
                  from_type_type: bool = False,
                  bound_args: Sequence[Optional[Type]] = (),
+                 erased_args: Sequence[Type] = (),
                  def_extras: Optional[Dict[str, Any]] = None,
                  type_guard: Optional[Type] = None,
                  ) -> None:
@@ -1555,6 +1560,9 @@ class CallableType(FunctionLike):
         if not bound_args:
             bound_args = ()
         self.bound_args = bound_args
+        if not erased_args:
+            erased_args = ()
+        self.erased_args = erased_args
         if def_extras:
             self.def_extras = def_extras
         elif isinstance(definition, FuncDef):
@@ -1592,6 +1600,7 @@ class CallableType(FunctionLike):
                       special_sig: Bogus[Optional[str]] = _dummy,
                       from_type_type: Bogus[bool] = _dummy,
                       bound_args: Bogus[List[Optional[Type]]] = _dummy,
+                      erased_args: Bogus[List[Type]] = _dummy,
                       def_extras: Bogus[Dict[str, Any]] = _dummy,
                       type_guard: Bogus[Optional[Type]] = _dummy,
                       ) -> 'CallableType':
@@ -1612,6 +1621,7 @@ class CallableType(FunctionLike):
             special_sig=special_sig if special_sig is not _dummy else self.special_sig,
             from_type_type=from_type_type if from_type_type is not _dummy else self.from_type_type,
             bound_args=bound_args if bound_args is not _dummy else self.bound_args,
+            erased_args=erased_args if erased_args is not _dummy else self.erased_args,
             def_extras=def_extras if def_extras is not _dummy else dict(self.def_extras),
             type_guard=type_guard if type_guard is not _dummy else self.type_guard,
         )

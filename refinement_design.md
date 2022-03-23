@@ -63,6 +63,10 @@ IsCat(V))]:
     ...
 ```
 
+## Design Work
+I really need to sit down and do some design work for a redesign from the bottom
+up.
+
 # TODO
 ## Tomorrow
 0. Get RSelf working for methods.
@@ -78,6 +82,8 @@ IsCat(V))]:
   all members of the type. This solves the tuple equality problem. This may use
   Z3's data type capabilities; it may not.
 - General variable programme
+  - Even more important given what I'm doing to pass around information on
+    erased self arguments.
   - Overhaul the variable system so that bound variables aren't just strings.
   - Develop diagnostics and pretty printing of variables.
   - Maybe: Consolidate verification vars and refinement vars and such not into
@@ -88,6 +94,19 @@ IsCat(V))]:
 - Get type aliases and generics working for refinement types.
 - Maybe: automatic inference of equality constriants on RSelf for direct
   assignments of arguments in constructors?
+- Consider coming up with some way of marking refinement types as being
+  currently loaded from (this would require associating verification vars with
+  types?). Currently I use `has_been_touched` to prevent loading the same
+  information over and over again, but I suspect that this will cause problems
+  with subproperties that have their own refinement information. I think I might
+  need to make `has_been_touched` directly mark the "source" of a refinement
+  constraint. I'm really not sure.
+
+
+## Future Notes
+- Currently subsumption checking for return statements uses the latest values.
+  I'm going to leave this as is for now, and maybe when I introduce post
+  conditions I'll go back and change this.
 
 ## General
 - It looks like z3 has tools for inspecting the ast and even substituting within

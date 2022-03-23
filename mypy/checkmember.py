@@ -220,7 +220,10 @@ def analyze_instance_member_access(name: str,
                 dispatched_type = meet.meet_types(mx.original_type, typ)
                 signature = check_self_arg(signature, dispatched_type, method.is_class,
                                            mx.context, name, mx.msg)
+            print("signature before bind self", signature)
             signature = bind_self(signature, mx.self_type, is_classmethod=method.is_class)
+            print("bound args after", signature.bound_args)
+            print("erased args after", signature.erased_args)
         typ = map_instance_to_supertype(typ, method.info)
         member_type = expand_type_by_instance(signature, typ)
         freeze_type_vars(member_type)
