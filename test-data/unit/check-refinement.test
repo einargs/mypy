@@ -488,7 +488,7 @@ class Thing:
 
 def f0() -> Annotated[Thing, V, V.prop == 2]: ...
 
-def block1() -> Annotated[int, X, X == 1]:
+def block1() -> Annotated[int, X]:
     test = Test0(2)
     b: Annotated[int, B, B == 4] = test()
 

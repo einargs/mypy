@@ -23,6 +23,7 @@ from mypy.nodes import (
     RefinementVarExpr, Context, Lvalue,
 )
 import mypy.checker
+from mypy.checkmember import analyze_member_access
 from mypy.visitor import ExpressionVisitor
 from mypy.literals import Key, literal, literal_hash, subkeys
 from mypy.messages import MessageBuilder
@@ -56,6 +57,9 @@ class VerificationVar:
         props list.
         """
         pass
+
+    @abstractmethod
+    def copy(self) -> 'VerificationVar': pass
 
     @abstractmethod
     def __repr__(self) -> str: pass
@@ -104,6 +108,9 @@ class RealVar(VerificationVar):
             props = []
         return RealVar(self.name, props)
 
+    def copy(self) -> 'RealVar':
+        return RealVar(self.name, self.props.copy())
+
     def extend(self, props: list[VarProp]) -> 'VerificationVar':
         return RealVar(self.name, self.props + props)
 
@@ -139,6 +146,9 @@ class FreshVar(VerificationVar):
         if props is None:
             props = []
         return FreshVar(self.id, props)
+
+    def copy(self) -> 'FreshVar':
+        return RealVar(self.name, self.props.copy())
 
     def extend(self, props: list[VarProp]) -> 'VerificationVar':
         return FreshVar(self.id, self.props + props)
@@ -199,8 +209,11 @@ class VerificationBinder:
         # This contains a list of all of the smt variables.
         self.smt_variables: list[SMTVar] = []
 
-        # Maps variable names to the smt variables
+        # Maps variable names to the smt variables.
         self.var_versions: Dict[VerificationVar, SMTExpr] = {}
+
+        # Maps variable names to refinement types.
+        self.var_types: Dict[VerificationVar, Type] = {}
 
         # Tracks what expressions have had constraints "loaded" from their
         # types.
@@ -216,6 +229,10 @@ class VerificationBinder:
         # the "RSelf" string to deal with RSelf, which should be safe, but we'd
         # rather not.
         self.bound_var_to_name: Dict[str, VerificationVar] = {}
+
+        # Are we currently loading info from a variable and thus don't need to
+        # recurse deeper?
+        self.currently_loading_from_var: bool = False
 
     def add_smt_constraints(
             self,
@@ -243,8 +260,14 @@ class VerificationBinder:
 
     def touch(self, var: VerificationVar) -> None:
         self.has_been_touched.add(var)
-        for sv in var.subvars():
-            self.has_been_touched.add(sv)
+
+    def store_type(self, var: VerificationVar, var_type: Type) -> None:
+        self.var_types[var] = var_type
+
+    def type_for(self, var: VerificationVar) -> Optional[Type]:
+        """Possibly this will fallback to the literal hash stuff?
+        """
+        return self.var_types.get(var)
 
     def fresh_verification_var(self) -> FreshVar:
         self.next_id += 1
@@ -257,20 +280,171 @@ class VerificationBinder:
         self.smt_variables.append(smt_var)
         return smt_var
 
-    def get_smt_expr(self, var: VerificationVar) -> SMTExpr:
+    def get_smt_expr(
+            self,
+            var: VerificationVar
+    ) -> SMTExpr:
         self.save_dependencies(var)
         if var in self.var_versions:
             return self.var_versions[var]
         else:
             fresh_var = self.fresh_smt_var(var)
             self.var_versions[var] = fresh_var
-            self.touch(var)
             return fresh_var
+
+    def load_from_type(
+            self,
+            expr_var: VerificationVar,
+            expr_type: Type,
+            *, ctx: Context
+    ) -> None:
+        print("trying to load for var", expr_var, "type", expr_type)
+        # TODO: how do I deal with other variables mentioned in this, e.g.,
+        # other properties of an object? Thinking about it maybe uniquing
+        # the refinement variables in semantic analysis would help with
+        # that. That way refinement variables would know they're talking
+        # about the other properties when those come in...
+
+        # TODO check that other stuff doesn't somehow get added before type
+        # constraints can be added.
+        if (isinstance(expr_type, BaseType)
+                and expr_type.refinements
+                and expr_var not in self.has_been_touched):
+            self.touch(expr_var)
+            var_bindings: list[tuple[str, VerificationVar]] = [
+                    # TODO: this is kind of a hack. Ideally I would
+                    # translate RSelf to some kind of local refinement
+                    # variable or something in check_assignment when
+                    # the type is inferred.
+                    ("RSelf", expr_var)
+                    ]
+            if (ref_var := expr_type.refinements.var) is not None:
+                var_bindings.append((ref_var.name, expr_var))
+
+            with self.var_bindings(var_bindings):
+                self.add_constraints(expr_type.refinements.constraints,
+                        ctx=ctx)
+
+    def load_from_var(
+            self,
+            var: VerificationVar,
+            *, ctx: Context
+    ) -> None:
+        if self.currently_loading_from_var:
+            return
+        self.currently_loading_from_var = True
+        base = var.copy_base()
+        base_type: Optional[Type] = None
+        props = var.props.copy()
+        
+        while True:
+            if (var_type := self.type_for(base)):
+                base_type = var_type
+
+            if base_type:
+                var_copy = base.copy()
+                self.load_from_type(var_copy, base_type, ctx=ctx)
+            
+            if props == []:
+                break
+            prop = props.pop(0)
+            if base_type:
+                if isinstance(prop, int):
+                    base_type = None
+                elif isinstance(prop, str):
+                    base_type = analyze_member_access(
+                            prop, base_type, ctx, is_lvalue=False,
+                            is_super=False, is_operator=True, msg=self.msg,
+                            original_type=base_type, chk=self.chk,
+                            in_literal_context=False)
+                else:
+                    assert False, "impossible by type of prop"
+            base.props.append(prop)
+        self.currently_loading_from_var = False
+
+
+    # Okay, it looks like vars need to be annotating every part of the
+    # expression, so this won't work.
+    # def try_expr_from_var(
+    #         self,
+    #         var: VerificationVar,
+    #         *, ctx: Context
+    # ) -> Optional[Expression]:
+    #     """This attempts to build an expression that will type check from
+    #     a verification variable and the types stored in var_types.
+    #     """
+    #     # Here we determine the var where we first have a type tracked
+    #     # and the remaining properties.
+    #     base = var.copy_base()
+    #     props: list[VarProp] = var.props.copy()
+    #     base_type: Optional[Type] = None
+    #     while True:
+    #         if (typ := self.type_for(base)):
+    #             base_type = typ
+
+    #         if props == []:
+    #             break
+    #         else:
+    #             prop = props.pop(0)
+    #             if isinstance(prop, int):
+    #                 break
+    #             base.props.append(prop)
+
+    #     if base_type is None:
+    #         return None
+
+    #     def wrap_expr(e: Expression, props: list[VarProp]) -> Expression:
+    #         for prop in props:
+    #             if isinstance(prop, int):
+    #                 e = IndexExpr(e, IntExpr(prop))
+    #             elif isinstance(prop, str):
+    #                 e = MemberExpr(e, prop)
+    #             else:
+    #                 assert False, "impossible"
+    #         return e
+
+    #     node = Var(base.props[-1], base_type)
+    #     base_expr = wrap_expr(NameExpr(base.name), base.props)
+    #     base_expr.node = node
+    #     full_expr = wrap_expr(base_expr, props)
+
+    def load_from_sub_exprs(
+            self,
+            expr: Expression,
+            *, ctx: Context
+    ) -> None:
+        """This function goes through all sub expressions, checking their types
+        and then seeing if those types are refinement types and then trying to
+        load from them.
+
+        The expression should successfully parse as a RealVar.
+        """
+
+        def sub_expr(e: Expression) -> Optional[Expression]:
+            if isinstance(acc_expr, NameExpr):
+                return None
+            elif isinstance(acc_expr, MemberExpr):
+                return acc_expr.expr
+            elif isinstance(acc_expr, IndexExpr):
+                return acc_expr.base
+            else:
+                assert False, "should be impossible"
+
+        acc_expr = expr
+        # This skips the first one, since this is just for sub expressions.
+        while (acc_expr := sub_expr(acc_expr)):
+            var = to_real_var(acc_expr)
+            assert var is not None
+            expr_type = self.chk.expr_checker.accept(acc_expr)
+            self.store_type(var, expr_type)
+            self.load_from_type(var, expr_type, ctx=ctx)
 
     def invalidate_var(self, var: VerificationVar) -> None:
         """Invalidate a variable, forcing the creation of a new smt variable
         with no associated constraints the next time it is used.
         """
+        # TODO: do I need to delete from self.var_types? I don't think so,
+        # because has_been_touched fulfills that role.
         if var in self.var_versions:
             del self.var_versions[var]
         if var in self.dependencies:
@@ -348,6 +522,7 @@ class VerificationBinder:
                 # this.
                 var = RealVar("self", expr.props + ext_props)
             self.save_dependencies(var)
+            self.load_from_var(var, ctx=expr)
             return self.get_smt_expr(var)
         elif isinstance(expr, RefinementVar):
             # Resolve anything where we have a term variable m, but we use the
@@ -356,6 +531,7 @@ class VerificationBinder:
             base = self.bound_var_to_name.get(expr.name, default_var)
             var = base.extend(expr.props + ext_props)
             self.save_dependencies(var)
+            self.load_from_var(var, ctx=expr)
 
             return self.get_smt_expr(var)
         else:
@@ -496,9 +672,9 @@ class VerificationBinder:
             return
         info = typ.refinements
         var = to_real_var(lvalue)
-        print("add_inferred_lvalue::var", var)
         if var is None:
             return
+        self.touch(var)
         bindings: list[tuple[str, VerificationVar]] = [
                 ("RSelf", var)
                 ]
@@ -553,28 +729,13 @@ class VerificationBinder:
         if var is None:
             return None
 
-        # TODO: how do I deal with other variables mentioned in this, e.g.,
-        # other properties of an object? Thinking about it maybe uniquing
-        # the refinement variables in semantic analysis would help with
-        # that. That way refinement variables would know they're talking
-        # about the other properties when those come in...
+        if expr_type is None:
+            assert False, "I don't think this will ever be triggered"
+            expr_type = self.chk.expr_checker.accept(expr)
 
-        # TODO check that other stuff doesn't somehow get added before type
-        # constraints can be added.
-        if is_refined_type(expr_type) and var not in self.has_been_touched:
-            self.has_been_touched.add(var)
-            assert expr_type.refinements, "guarenteed by is_refined_type"
-            var_bindings: list[tuple[str, VerificationVar]] = [
-                    # TODO: this is kind of a hack. Ideally I would translate
-                    # RSelf to some kind of local refinement variable or
-                    # something.
-                    ("RSelf", var)
-                    ]
-            if (ref_var := expr_type.refinements.var) is not None:
-                var_bindings.append((ref_var.name, var))
-
-            with self.var_bindings(var_bindings):
-                self.add_constraints(expr_type.refinements.constraints, ctx=expr)
+        self.store_type(var, expr_type)
+        self.load_from_type(var, expr_type, ctx=expr)
+        self.load_from_sub_exprs(expr, ctx=expr)
 
         return var
 
@@ -624,8 +785,7 @@ class VerificationBinder:
             return None
 
         fresh_var = self.fresh_verification_var()
-        smt_var = self.get_smt_expr(fresh_var)
-        self.add_smt_constraints([smt_var == smt_expr])
+        self.var_versions[fresh_var] = smt_expr
 
         return fresh_var
 

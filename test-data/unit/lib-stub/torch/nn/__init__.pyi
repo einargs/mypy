@@ -30,8 +30,14 @@ class Conv2d:
     ) -> Annotated[None,
             RSelf.in_channels == IC,
             RSelf.out_channels == OC,
-            RSelf.kernel_size == KS,
-            RSelf.stride == SD]:
+            RSelf.kernel_size[0] == KS[0],
+            RSelf.kernel_size[1] == KS[1],
+            RSelf.stride[0] == SD[0],
+            RSelf.stride[1] == SD[1],
+            RSelf.padding[0] == PD[0],
+            RSelf.padding[1] == PD[1],
+            RSelf.dilation[0] == DL[0],
+            RSelf.dilation[1] == DL[1]]:
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
