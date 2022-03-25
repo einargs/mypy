@@ -407,7 +407,6 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                     return AnyType(TypeOfAny.from_error)
 
             root.refinements = RefinementInfo(local_var, constraints)
-            print("root", root)
 
             return root
         elif fullname in ('typing_extensions.Required', 'typing.Required'):

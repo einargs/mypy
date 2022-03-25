@@ -148,7 +148,7 @@ class FreshVar(VerificationVar):
         return FreshVar(self.id, props)
 
     def copy(self) -> 'FreshVar':
-        return RealVar(self.name, self.props.copy())
+        return FreshVar(self.id, self.props.copy())
 
     def extend(self, props: list[VarProp]) -> 'VerificationVar':
         return FreshVar(self.id, self.props + props)
@@ -238,7 +238,6 @@ class VerificationBinder:
             self,
             constraints: list[SMTConstraint]
     ) -> None:
-        print("adding constraints", constraints)
         self.smt_solver.add(constraints)
 
     def add_constraints(
@@ -262,6 +261,7 @@ class VerificationBinder:
         self.has_been_touched.add(var)
 
     def store_type(self, var: VerificationVar, var_type: Type) -> None:
+        print("storing type", var_type, "for", var)
         self.var_types[var] = var_type
 
     def type_for(self, var: VerificationVar) -> Optional[Type]:
@@ -298,7 +298,6 @@ class VerificationBinder:
             expr_type: Type,
             *, ctx: Context
     ) -> None:
-        print("trying to load for var", expr_var, "type", expr_type)
         # TODO: how do I deal with other variables mentioned in this, e.g.,
         # other properties of an object? Thinking about it maybe uniquing
         # the refinement variables in semantic analysis would help with
@@ -663,6 +662,15 @@ class VerificationBinder:
             return
         self.add_var(var, typ, ctx=lvalue)
 
+    def alias_to(self, alias: VerificationVar, source: VerificationVar) -> None:
+        if source in self.var_versions:
+            self.var_versions[alias] = self.var_versions[source]
+        for dep in self.dependencies.get(source, set()):
+            prop_len = len(source.props)
+            assert source.props == dep.props[:prop_len]
+            new_alias = alias.extend(dep.props[prop_len:])
+            self.alias_to(new_alias, dep)
+
     def add_inferred_lvalue(self, lvalue: Lvalue, typ: Type) -> None:
         """Add a verification var with constraints based on the inferred type.
 
@@ -675,13 +683,17 @@ class VerificationBinder:
         if var is None:
             return
         self.touch(var)
-        bindings: list[tuple[str, VerificationVar]] = [
-                ("RSelf", var)
-                ]
-        if info.var:
-            bindings.append((info.var.name, var))
-        with self.var_bindings(bindings):
-            self.add_constraints(info.constraints, ctx=lvalue)
+
+        if info.verification_var:
+            self.alias_to(var, info.verification_var)
+        else:
+            bindings: list[tuple[str, VerificationVar]] = [
+                    ("RSelf", var)
+                    ]
+            if info.var:
+                bindings.append((info.var.name, var))
+            with self.var_bindings(bindings):
+                self.add_constraints(info.constraints, ctx=lvalue)
 
     def fail(self, msg: str, context: Context) -> None:
         self.msg.fail(msg, context)
@@ -693,8 +705,6 @@ class VerificationBinder:
             ctx: Context
     ) -> VerificationVar:
         assert ret_type.refinements is not None
-
-        print("var_for_call_expr::bindings", bindings)
 
         fresh_var = self.fresh_verification_var()
         var_bindings: list[tuple[str, VerificationVar]] = []
@@ -753,7 +763,6 @@ class VerificationBinder:
                 and expr_type.refinements
                 and expr_type.refinements.verification_var):
             smt_var = self.get_smt_expr(expr_type.refinements.verification_var)
-            print("smt_var", smt_var)
             return smt_var
         else:
             var = self.real_var_from_expr(expr, expr_type)
@@ -834,12 +843,9 @@ class VerificationBinder:
         elif (is_refined_type(expr_type)
                 and expr_type.refinements
                 and expr_type.refinements.verification_var):
-            print("verification_var:", expr_type.refinements.verification_var)
             return expr_type.refinements.verification_var, False
         else:
-            print("{entering real_var_from_expr from var_from_expr")
             var = self.real_var_from_expr(expr, expr_type)
-            print("}leaving real_var_from_expr from var_from_expr")
             return var, False
 
     def check_implication(self, constraints: list[SMTConstraint]) -> bool:
@@ -918,6 +924,44 @@ class VerificationBinder:
                 if not self.check_implication(constraints):
                     self.fail(FAIL_MSG, ctx)
                 return
+
+    def check_call_args(
+            self,
+            bindings: list[Tuple[Type, Expression, Type]],
+            *, ctx: Context
+    ) -> None:
+        """In order to allow all of the bindings to exist for each of the
+        different arguments to access each other we have to recursively add
+        to the bindings.
+        """
+        if bindings == []:
+            return
+
+        expected_type, expr, expr_type = bindings[0]
+        info = expected_type.refinements
+
+        if info is None:
+            self.check_call_args(bindings[1:], ctx=ctx)
+            return
+
+        def check():
+            FAIL_MSG = "refinement type check failed"
+            constraints = self.translate_all(info.constraints, ctx=ctx)
+            if not self.check_implication(constraints):
+                self.fail(FAIL_MSG, ctx)
+
+        if info.var is None:
+            check()
+            self.check_call_args(bindings[1:], ctx=ctx)
+        else:
+            var, has_sent_error = self.var_from_expr(expr, expr_type)
+            if var is None:
+                if not has_sent_error:
+                    self.fail('could not understand expression', ctx)
+                return
+            with self.var_binding(info.var.name, var):
+                check()
+                self.check_call_args(bindings[1:], ctx=ctx)
 
     def check_init(self, target: Type, *, ctx: Context) -> None:
         """This is a specialized version of check_subsumption for the

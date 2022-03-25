@@ -16,7 +16,7 @@ import mypy.nodes
 from mypy import state
 from mypy.nodes import (
     INVARIANT, SymbolNode, FuncDef,
-    ArgKind, ARG_POS, ARG_STAR, ARG_STAR2, Expression, IntExpr,
+    ArgKind, ARG_POS, ARG_STAR, ARG_STAR2, Expression, IntExpr, TupleExpr,
 )
 from mypy.util import IdMapper
 from mypy.bogus_type import Bogus
@@ -501,7 +501,6 @@ class RefinementTuple(RefinementExpr):
         return RefinementTuple(
                 [deserialize_refinement_expr(v) for v in data['items']])
 
-
 class RefinementVar(RefinementExpr):
     """A variable inside a refinement type's predicate.
     """
@@ -518,8 +517,14 @@ class RefinementVar(RefinementExpr):
 
     def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
         for name, expr in bindings:
-            if name == self.name and self.props == [] and isinstance(expr, IntExpr):
-                return RefinementLiteral(expr.value)
+            if name == self.name: 
+                if self.props == [] and isinstance(expr, IntExpr):
+                    return RefinementLiteral(expr.value)
+                elif (isinstance(expr, TupleExpr)
+                        and all(isinstance(e, IntExpr) for e in expr.items)
+                        and len(self.props) == 1
+                        and self.props[0] < len(expr.items)):
+                    return RefinementLiteral(expr.items[self.props[0]].value)
         return self
 
     def __eq__(self, other: Any) -> bool:

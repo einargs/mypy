@@ -251,12 +251,6 @@ def bind_self(method: F, original_type: Optional[Type] = None, is_classmethod: b
         variables = func.variables
 
     original_type = get_proper_type(original_type)
-    print("original_type", original_type)
-    if isinstance(original_type, BaseType) and original_type.refinements and original_type.refinements.verification_var:
-        print("vc var original_type", original_type.refinements.verification_var)
-    print("self_param_type", self_param_type)
-    if isinstance(self_param_type, BaseType) and self_param_type.refinements and self_param_type.refinements.verification_var:
-        print("vc var self_param_type", self_param_type.refinements.verification_var)
     if isinstance(original_type, CallableType) and original_type.is_type_obj():
         original_type = TypeType.make_normalized(original_type.ret_type)
     res = func.copy_modified(arg_types=arg_types,

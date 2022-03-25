@@ -30,8 +30,8 @@ def max_pool2d(
 ) -> Annotated[Tensor, S,
         T.shape[0] == S.shape[0],
         T.shape[1] == S.shape[1],
-        S.shape[2] == (T.shape[2] + 2*PD[0] - (KS[0] - 1) - 1)//SD[0] - 1,
-        S.shape[3] == (T.shape[3] + 2*PD[1] - (KS[1] - 1) - 1)//SD[1] - 1,
+        S.shape[2] == (T.shape[2] + 2*PD[0] - (KS[0] - 1) - 1)//SD[0] + 1,
+        S.shape[3] == (T.shape[3] + 2*PD[1] - (KS[1] - 1) - 1)//SD[1] + 1,
         ]: ...
 
 def log_softmax(

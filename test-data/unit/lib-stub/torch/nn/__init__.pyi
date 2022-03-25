@@ -45,21 +45,23 @@ class Conv2d:
         self.padding = padding
         self.dilation = dilation
 
-    def __call__(self: Annotated['Conv2d', SELF], t: Annotated[Tensor, T]
-            ) -> Annotated[Tensor, S,
-                    S.shape[0] == T.shape[0],
-                    S.shape[1] == T.shape[1],
-                    S.shape[2] == (T.shape[2] + 2
-                        * SELF.padding[0]
-                        - SELF.dilation[0]
-                        * (SELF.kernel_size[0] - 1)
-                        - 1) // SELF.stride[0] + 1,
-                    S.shape[3] == (T.shape[3] + 2
-                        * SELF.padding[1]
-                        - SELF.dilation[1]
-                        * (SELF.kernel_size[1] - 1)
-                        - 1) // SELF.stride[1] + 1,
-                    ]: ...
+    def __call__(
+            self: Annotated['Conv2d', SELF],
+            t: Annotated[Tensor, T, T.shape[1] == SELF.in_channels]
+    ) -> Annotated[Tensor, S,
+            S.shape[0] == T.shape[0],
+            S.shape[1] == SELF.out_channels,
+            S.shape[2] == (T.shape[2] + 2
+                * SELF.padding[0]
+                - SELF.dilation[0]
+                * (SELF.kernel_size[0] - 1)
+                - 1) // SELF.stride[0] + 1,
+            S.shape[3] == (T.shape[3] + 2
+                * SELF.padding[1]
+                - SELF.dilation[1]
+                * (SELF.kernel_size[1] - 1)
+                - 1) // SELF.stride[1] + 1,
+            ]: ...
 
 class Dropout4:
     def __init__(self, p: float): ...

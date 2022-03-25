@@ -474,6 +474,11 @@ class Test0:
         # implemented.
         return self.c * a * self.prop.x
 
+    def useProp(self: Annotated['Test0', SELF]) -> Annotated[int, V, V == 2]:
+        inferred = self.prop
+        otherProp: Annotated['Prop0', X, X.x == 2] = inferred
+        return otherProp.x
+
     def __call__(self: Annotated['Test0', SELF]) -> Annotated[int, V, V == SELF.c * 2]:
         return self.c * 2
 
@@ -495,13 +500,24 @@ def block1() -> Annotated[int, X]:
     return 0
 [builtins fixtures/ops.pyi]
 
-
-[case testRefinementFinal]
+[case testRefinementArgDeps]
 from typing_extensions import Annotated
 from refinement import *
 
-class Test0:
-    a: Final[int]
+SELF = RefinementVar('SELF')
 
-# TODO:
+def f0(a: Annotated[int, A], b: Annotated[int, B, B == A]) -> None: ...
+
+f0(0, 0)
+
+class Test0:
+    def __init__(self, c: Annotated[int, C]) -> Annotated[None, RSelf.c == C]:
+        self.c = c
+
+    def deps(self: Annotated['Test0', SELF], arg: Annotated[int, V, V == SELF.c]) -> None: ...
+
+test = Test0(1)
+
+test.deps(1)
+test.deps(2) # E: refinement type check failed
 [builtins fixtures/primitives.pyi]

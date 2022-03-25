@@ -1433,10 +1433,8 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
                 return value
         elif isinstance(node, ast3.Name):
             if node.id == "RSelf":
-                print("found RSelf")
                 return RefinementSelf(line=node.lineno, column=node.col_offset)
             else:
-                print("found refinement var", node.id)
                 return RefinementVar(node.id,
                         line=node.lineno, column=node.col_offset)
         else:

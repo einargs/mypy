@@ -950,12 +950,10 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         elif isinstance(callee, UnionType):
             return self.check_union_call(callee, args, arg_kinds, arg_names, context, arg_messages)
         elif isinstance(callee, Instance):
-            print("analyze __call__ access")
             call_function = analyze_member_access('__call__', callee, context, is_lvalue=False,
                                                   is_super=False, is_operator=True, msg=self.msg,
                                                   original_type=callee, chk=self.chk,
                                                   in_literal_context=self.is_literal_context())
-            print("after analyze __call__ access")
             callable_name = callee.type.fullname + ".__call__"
             # Apply method signature hook, if one exists
             call_function = self.transform_callee_type(
@@ -1056,26 +1054,26 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         self.check_argument_count(callee, arg_types, arg_kinds,
                                   arg_names, formal_to_actual, context, self.msg)
 
-        arg_info = self.check_argument_types(arg_types, arg_kinds, args, callee,
-                formal_to_actual, context, messages=arg_messages, object_type=object_type)
-
+        # This needs to happen before we check argument types because otherwise
+        # information about self won't be loaded in for later arguments to use.
         self_expr: Optional[Expression] = None
         if callable_name.endswith("__call__"):
             self_expr = callable_node
-        elif isinstance(callable_node, MemberExpr):
+        elif (isinstance(callable_node, MemberExpr)
+                and len(callee.bound_args) > 0 and len(callee.erased_args) > 0):
             self_expr = callable_node.expr
 
-        print("self_expr", self_expr)
-
         if self_expr:
+            print("bound_args", callee.bound_args, "erased_args", callee.erased_args)
             assert len(callee.bound_args) == 1 and len(callee.erased_args) == 1
             expr_type = callee.bound_args[0]
             expected_type = callee.erased_args[0]
             # TODO: figure out if we get the erased args in other situations
             # Checks the self type thing.
-            print("{running self_expr subsumption check")
             self.chk.vc_binder.check_subsumption(self_expr, expr_type, expected_type, ctx=self_expr)
-            print("}finished self_expr subsumption check")
+
+        arg_info = self.check_argument_types(arg_types, arg_kinds, args, callee,
+                formal_to_actual, context, messages=arg_messages, object_type=object_type)
 
         if (callee.is_type_obj() and (len(arg_types) == 1)
                 and is_equivalent(callee.ret_type, self.named_type('builtins.type'))):
@@ -1097,22 +1095,26 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         # Here we perform substitution for the return type.
         if is_refined_type(callee.ret_type):
             assert callee.ret_type.refinements is not None
-            bindings: list[Tuple[str, Expression, Type]] = []
+            # order: expected type, expr, expr_type
+            arg_bindings: list[Tuple[Type, Expression, Type]] = []
+
             if self_expr:
                 expr_type = callee.bound_args[0]
                 expected_type = callee.erased_args[0]
-                if (isinstance(expected_type, BaseType)
-                        and expected_type.refinements
-                        and expected_type.refinements.var):
-                    bindings.append((expected_type.refinements.var.name, self_expr, expr_type))
+                arg_bindings.append((expected_type, self_expr, expr_type))
+
             for arg_expr, arg_type, expected_type in arg_info:
-                if (is_refined_type(expected_type)
-                        and expected_type.refinements
-                        and expected_type.refinements.var):
-                    # we assume that it passes types; check_arg does the
-                    # actual type checking.
-                    bindings.append((expected_type.refinements.var.name,
-                        arg_expr, arg_type))
+                arg_bindings.append((expected_type, arg_expr, arg_type))
+
+            # This checks the argument types.
+            self.chk.vc_binder.check_call_args(arg_bindings, ctx=context)
+
+            # We generate the important bindings for getting the return.
+            bindings = [(expect.refinements.var.name, expr, expr_type)
+                for (expect, expr, expr_type) in arg_bindings
+                if (isinstance(expect, BaseType)
+                    and expect.refinements
+                    and expect.refinements.var)]
             ret_var = self.chk.vc_binder.var_for_call_expr(
                     callee.ret_type, bindings, ctx=context)
             subst_bindings = [(name, expr) for (name, expr, _) in bindings]
@@ -1611,11 +1613,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
               isinstance(callee_type.item, Instance) and
               (callee_type.item.type.is_abstract or callee_type.item.type.is_protocol)):
             self.msg.concrete_only_call(callee_type, context)
-        elif is_subtype(caller_type, callee_type):
-            # Here we check refinement types if the standard typing is correct.
-            self.chk.vc_binder.check_subsumption(arg_expr,
-                    caller_type, callee_type, ctx=arg_expr)
-        else:
+        elif not is_subtype(caller_type, callee_type):
             if self.chk.should_suppress_optional_error([caller_type, callee_type]):
                 return
             code = messages.incompatible_argument(n,
