@@ -19,6 +19,13 @@ S = RefinementVar('S')
 SELF = RefinementVar('SELF')
 
 class Conv2d:
+    in_channels: int
+    out_channels: int
+    kernel_size: Tuple[int, int]
+    stride: Tuple[int, int]
+    padding: Tuple[int, int]
+    dilation: Tuple[int, int]
+
     def __init__(
             self,
             in_channels: Annotated[int, IC, Const],
@@ -33,13 +40,7 @@ class Conv2d:
             RSelf.kernel_size == KS,
             RSelf.stride == SD,
             RSelf.padding == PD,
-            RSelf.dilation == DL]:
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
+            RSelf.dilation == DL]: ...
 
     def __call__(
             self: Annotated['Conv2d', SELF],
