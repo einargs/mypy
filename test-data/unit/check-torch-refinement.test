@@ -73,6 +73,33 @@ class Net(nn.Module):
 
 [builtins fixtures/primitives.pyi]
 
+[case testTorchRefinementMinimalMnist]
+from torch import Tensor
+import torch.nn as nn
+from typing_extensions import Annotated
+from refinement import RefinementVar
+
+T = RefinementVar('T')
+
+X0 = RefinementVar('X0')
+
+class Net(nn.Module):
+    def __init__(self) -> None:
+        super(Net, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, (3,3), (1,1), (0,0), (1,1))
+        self.conv2 = nn.Conv2d(32, 64, (3,3), (1,1), (0,0), (1,1))
+        self.dropout1 = nn.Dropout4(0.25)
+        self.dropout2 = nn.Dropout2(0.5)
+        self.fc1 = nn.Linear(9216, 128)
+        self.fc2 = nn.Linear(128, 10)
+
+    def forward(
+            self,
+            x: Annotated[Tensor, T, T.shape == (64, 1, 28, 28)]
+    ) -> None:
+        x0: Annotated[Tensor, X0, X0.shape == (64, 32, 26, 26)] = self.conv1(x)
+[builtins fixtures/primitives.pyi]
+
 [case testTorchRefinementReUseMnist]
 import torch
 from torch import Tensor
@@ -103,7 +130,7 @@ class Net(nn.Module):
     def forward(
             self,
             input: Annotated[Tensor, T, T.shape == (64, 1, 28, 28)]
-    ) -> Annotated[Tensor, R, R.shape == (64, 11)]:
+    ) -> Annotated[Tensor, R, R.shape == (64, 10)]:
         # This isn't working yet; it's a goal to reach
         x = self.conv1(input)
         x = F.relu4(x)

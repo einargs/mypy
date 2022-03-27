@@ -501,6 +501,7 @@ class RefinementTuple(RefinementExpr):
         return RefinementTuple(
                 [deserialize_refinement_expr(v) for v in data['items']])
 
+
 class RefinementVar(RefinementExpr):
     """A variable inside a refinement type's predicate.
     """
@@ -517,7 +518,7 @@ class RefinementVar(RefinementExpr):
 
     def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
         for name, expr in bindings:
-            if name == self.name: 
+            if name == self.name:
                 if self.props == [] and isinstance(expr, IntExpr):
                     return RefinementLiteral(expr.value)
                 elif (isinstance(expr, TupleExpr)
@@ -561,7 +562,7 @@ class RefinementSelf(RefinementExpr):
         self.props = props
 
     def __eq__(self, other: Any) -> bool:
-        if not isinstsance(other, RefinementSelf):
+        if not isinstance(other, RefinementSelf):
             raise NotImplementedError
         return self.props == other.props
 
@@ -578,7 +579,19 @@ class RefinementSelf(RefinementExpr):
         return prop_list_str("RSelf", self.props)
 
 
-RefinementValue: _TypeAlias = Union[RefinementVar, RefinementLiteral]
+class RefinementClause(mypy.nodes.Context):
+    """Something that can fit inside one of the clauses of a refinement
+    annotation.
+    """
+
+
+class RefinementConst(RefinementClause):
+    """Special indicator meaning that the refinement conditions can be
+    considered "constant".
+    """
+
+    def __repr__(self) -> str:
+        return "Const"
 
 
 class ConstraintKind(enum.Enum):
@@ -590,7 +603,7 @@ class ConstraintKind(enum.Enum):
     GT_EQ = enum.auto()  # >=
 
 
-class RefinementConstraint(mypy.nodes.Context):
+class RefinementConstraint(RefinementClause):
     """A constraint on a base type. Can constraint integers, tuples of integers,
     or properties that are integers of tuples of integers.
     """
@@ -633,20 +646,23 @@ class RefinementInfo:
     """All information about a refined base type.
     """
 
-    __slots__ = ('var', 'constraints', 'verification_var')
+    __slots__ = ('var', 'constraints', 'verification_var', 'is_const')
 
     def __init__(
             self,
             var: Optional[RefinementVar],
             constraints: list[RefinementConstraint],
+            is_const: bool,
             verification_var: Optional['VerificationVar'] = None
             ):
         self.var = var
         self.constraints = constraints
+        self.is_const = is_const
         self.verification_var = verification_var
 
     def serialize(self) -> JsonDict:
         return {'var': self.var.serialize() if self.var else None,
+                'is_const': self.is_const,
                 'constraints': [c.serialize() for c in self.constraints],
                 }
 
@@ -655,10 +671,11 @@ class RefinementInfo:
         assert data['.class'] == 'RefinementInfo'
         return RefinementInfo(
                 RefinementVar.deserialize(data['var']),
-                [RefinementConstraint.deserialize(c) for c in data['constraints']])
+                [RefinementConstraint.deserialize(c) for c in data['constraints']],
+                data['is_const'])
 
     def clear_verification_var(self) -> 'RefinementInfo':
-        return RefinementInfo(self.var, self.constraints)
+        return RefinementInfo(self.var, self.constraints, self.is_const)
 
     def substitute(
             self,
@@ -668,7 +685,7 @@ class RefinementInfo:
         if bindings is _dummy:
             bindings = []
         constraints = [c.substitute(bindings) for c in self.constraints]
-        return RefinementInfo(self.var, constraints, vc_var)
+        return RefinementInfo(self.var, constraints, self.is_const, vc_var)
 
 
 class BaseType(ProperType):
@@ -2685,7 +2702,10 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
         else:
             var_str = expr_str(base.refinements.var)
 
-            return "{}{{{}: {}}}".format(base_str, var_str, constraints_str)
+            const_str = "const " if base.refinements.is_const else ""
+
+            return "{}{{{}{}: {}}}".format(
+                    base_str, const_str, var_str, constraints_str)
 
     def visit_unbound_type(self, t: UnboundType) -> str:
         s = t.name + '?'

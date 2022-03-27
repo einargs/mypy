@@ -42,6 +42,11 @@ checking. UPDATE: Actually, meta variables will just never be invalidated.
 Entering a new function scope should put vc conditons on a stack (probably using
 `@contextmanager`).
 
+## Loading from refined types
+I think that I should only load from refined types if they have a Const
+modifier. If they don't, I should erase the extra type information and only rely
+on the `verification_var` property so that type info doesn't get loaded from it.
+
 ## Refinement variable substitution in return types
 In order to get correctly substituted return types, why don't I just modify the
 returned type in the expr checker? The question is how to substitute for actual
@@ -109,6 +114,7 @@ up.
   conditions I'll go back and change this.
 
 ## General
+- It currently can't understand accessing the result of a function return value.
 - It looks like z3 has tools for inspecting the ast and even substituting within
   it -- see decl and substitute.
 - Overhaul the bound variable system and fix the clunky RSelf hack I have right

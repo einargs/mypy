@@ -1,7 +1,7 @@
 from typing import Tuple
 from torch import Tensor
 from typing_extensions import Annotated
-from refinement import RefinementVar, RSelf
+from refinement import RefinementVar, RSelf, Const
 
 class Module:
     pass
@@ -21,12 +21,12 @@ SELF = RefinementVar('SELF')
 class Conv2d:
     def __init__(
             self,
-            in_channels: Annotated[int, IC],
-            out_channels: Annotated[int, OC],
-            kernel_size: Annotated[Tuple[int, int], KS],
-            stride: Annotated[Tuple[int, int], SD],
-            padding: Annotated[Tuple[int, int], PD],
-            dilation: Annotated[Tuple[int, int], DL],
+            in_channels: Annotated[int, IC, Const],
+            out_channels: Annotated[int, OC, Const],
+            kernel_size: Annotated[Tuple[int, int], KS, Const],
+            stride: Annotated[Tuple[int, int], SD, Const],
+            padding: Annotated[Tuple[int, int], PD, Const],
+            dilation: Annotated[Tuple[int, int], DL, Const],
     ) -> Annotated[None,
             RSelf.in_channels == IC,
             RSelf.out_channels == OC,

@@ -5,6 +5,8 @@ class RefinementVar:
 
 RSelf = object()
 
+Const = object()
+
 V = RefinementVar('V')
 X = RefinementVar('X')
 Y = RefinementVar('Y')

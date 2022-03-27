@@ -1064,7 +1064,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             self_expr = callable_node.expr
 
         if self_expr:
-            print("bound_args", callee.bound_args, "erased_args", callee.erased_args)
             assert len(callee.bound_args) == 1 and len(callee.erased_args) == 1
             expr_type = callee.bound_args[0]
             expected_type = callee.erased_args[0]
@@ -1092,22 +1091,24 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 callable_name, object_type, context)
             callee = callee.copy_modified(ret_type=new_ret_type)
 
+        # Here we check the refinement types for all the arguments
+        # order: expected type, expr, expr_type
+        arg_bindings: list[Tuple[Type, Expression, Type]] = []
+
+        if self_expr:
+            expr_type = callee.bound_args[0]
+            expected_type = callee.erased_args[0]
+            arg_bindings.append((expected_type, self_expr, expr_type))
+
+        for arg_expr, arg_type, expected_type in arg_info:
+            arg_bindings.append((expected_type, arg_expr, arg_type))
+
+        # This checks the argument types.
+        self.chk.vc_binder.check_call_args(arg_bindings, ctx=context)
+
         # Here we perform substitution for the return type.
         if is_refined_type(callee.ret_type):
             assert callee.ret_type.refinements is not None
-            # order: expected type, expr, expr_type
-            arg_bindings: list[Tuple[Type, Expression, Type]] = []
-
-            if self_expr:
-                expr_type = callee.bound_args[0]
-                expected_type = callee.erased_args[0]
-                arg_bindings.append((expected_type, self_expr, expr_type))
-
-            for arg_expr, arg_type, expected_type in arg_info:
-                arg_bindings.append((expected_type, arg_expr, arg_type))
-
-            # This checks the argument types.
-            self.chk.vc_binder.check_call_args(arg_bindings, ctx=context)
 
             # We generate the important bindings for getting the return.
             bindings = [(expect.refinements.var.name, expr, expr_type)
@@ -1118,8 +1119,11 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             ret_var = self.chk.vc_binder.var_for_call_expr(
                     callee.ret_type, bindings, ctx=context)
             subst_bindings = [(name, expr) for (name, expr, _) in bindings]
+            print("bindings", bindings)
+            print("subst_bindings", subst_bindings)
             ref_info = callee.ret_type.refinements.substitute(ret_var, subst_bindings)
             ret_type = callee.ret_type.copy_with_refinements(ref_info)
+            print("after substitute", ret_type)
             return ret_type, callee
         else:
             return callee.ret_type, callee
@@ -2292,7 +2296,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 result_var = self.chk.vc_binder.var_for_bin_op(
                         e, proper_left_type, proper_right_type)
                 if result_var:
-                    ref_info = RefinementInfo(None, [], result_var)
+                    ref_info = RefinementInfo(None, [], False, result_var)
                     new_result = result.copy_with_refinements(ref_info)
                     return new_result
             return result

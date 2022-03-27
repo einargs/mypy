@@ -285,9 +285,11 @@ reveal_type(eq_arg(5))  # N: Revealed type is "builtins.int{B: B == 5}"
 from typing_extensions import Annotated
 from refinement import *
 
+# TODO: currently this gets overwritten. In the future I might want a mechanism
+# to allow direct declaration to be maintained.
 a: Annotated[int, A, A > 5] = 6
 a = 7
-a = 3  # E: refinement type check failed
+a = 3  # TODO: refinement type check failed
 [builtins fixtures/tuple.pyi]
 
 [case testRefinementMembers]
@@ -521,3 +523,68 @@ test = Test0(1)
 test.deps(1)
 test.deps(2) # E: refinement type check failed
 [builtins fixtures/primitives.pyi]
+
+[case testRefinementConst]
+from typing_extensions import Annotated
+from refinement import *
+
+def f0(x: Annotated[int, X, X > 3]) -> None:
+    y = x
+    z: Annotated[int, Z, Z > 2] = x # E: refinement type check failed
+
+def f1() -> None:
+    x: Annotated[int, X, Const, X > 3] = 5
+    y = x
+    z: Annotated[int, Z, Z > 2] = x
+
+def f2(x: Annotated[int, X, Const, X > 3]) -> None:
+    y = x
+    z: Annotated[int, Z, Z > 1] = 2
+    y = z
+
+def f3() -> None:
+    x: Annotated[int, X, Const, X > 3] = 4
+    # TODO: currently even this will be overwritten. In the future I might want
+    # this to work.
+    z: Annotated[int, Z, Z > 6] = 8
+    x = z
+    x = 2 # TODO: refinement type check failed
+
+def f4(input: Annotated[int, V, V > 3]) -> None:
+    x: Annotated[int, X, X == 1] = 1
+    y: Annotated[int, Y, Y == 2] = 2
+    z: Annotated[int, Z, Z == 3] = 3
+
+    a = x
+    a = y
+    a = z
+    b: Annotated[int, B, B == 3] = a
+[builtins fixtures/primitives.pyi]
+
+[case testRefinementReUse]
+from typing_extensions import Annotated
+from refinement import *
+
+def inc(x: Annotated[int, X]) -> Annotated[int, V, V == X + 1]:
+    return x + 1
+
+def f0(input: Annotated[int, V, V == 0]) -> None:
+    a = inc(input)
+    a = inc(a)
+    a = inc(a)
+    b: Annotated[int, B, B == 4] = inc(a)
+
+class Container:
+    def __init__(self, x: Annotated[int, X]) -> Annotated[None, RSelf.x == X]:
+        self.x = x
+
+def incCon(x: Annotated[Container, X]) -> Annotated[Container, V, V.x == X.x + 1]:
+    return Container(x.x + 1)
+
+def f1(input: Annotated[Container, V, V.x == 0]) -> None:
+    a = incCon(input)
+    a = incCon(a)
+    a = incCon(a)
+    b: Annotated[Container, B, B.x == 4] = incCon(a)
+
+[builtins fixtures/ops.pyi]

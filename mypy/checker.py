@@ -2352,11 +2352,17 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
                 # Check existing refinement annotations
                 if lvalue_type is not None:
-                    self.vc_binder.check_subsumption(rvalue, rvalue_type,
-                            lvalue_type, ctx=rvalue)
-                    self.vc_binder.add_lvalue(lvalue, lvalue_type)
-                    # Now we invalidate all the refinement variables after checking
-                    self.vc_binder.invalidate_vars_in_expr(rvalue)
+                    # `infer_lvalue_type` being true means this wasn't explicitly
+                    # annotated. If it wasn't, we don't check against the type
+                    # and instead override it.
+                    if infer_lvalue_type:
+                        self.vc_binder.overwrite_inferred_lvalue(
+                                lvalue, rvalue, rvalue_type)
+                    else:
+                        self.vc_binder.check_subsumption(rvalue, rvalue_type,
+                                lvalue_type, ctx=rvalue)
+                        self.vc_binder.add_lvalue(lvalue, lvalue_type)
+                        self.vc_binder.invalidate_vars_in_expr(rvalue)
 
                 if (isinstance(rvalue_type, CallableType) and rvalue_type.is_type_obj() and
                         (rvalue_type.type_object().is_abstract or
@@ -2384,6 +2390,9 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 # Now we invalidate all the refinement variables after checking
                 self.vc_binder.invalidate_vars_in_expr(rvalue)
                 if isinstance(rvalue_type, BaseType) and rvalue_type.refinements:
+                    # TODO: if an inferred thing is final we should probably
+                    # make it const or something? It can't be assigned to...
+                    # hmm.
                     new_ref_info = rvalue_type.refinements.clear_verification_var()
                     rvalue_type = rvalue_type.copy_with_refinements(new_ref_info)
 

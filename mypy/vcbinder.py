@@ -8,9 +8,9 @@ from typing_extensions import TypeAlias, TypeGuard
 from mypy.types import (
     Type, AnyType, PartialType, UnionType, TypeOfAny, NoneType, get_proper_type,
     BaseType, RefinementConstraint, RefinementExpr, ConstraintKind,
-    RefinementLiteral, RefinementVar, RefinementTuple, RefinementValue,
-    RefinementBinOpKind, RefinementBinOp, Instance, ProperType, TupleType,
-    TypeVarType, RefinementSelf,
+    RefinementLiteral, RefinementVar, RefinementTuple, RefinementBinOpKind,
+    RefinementBinOp, Instance, ProperType, TupleType, TypeVarType,
+    RefinementSelf,
 )
 from mypy.nodes import (
     Expression, ComparisonExpr, OpExpr, MemberExpr, UnaryExpr, StarExpr, IndexExpr,
@@ -126,7 +126,7 @@ class RealVar(VerificationVar):
         return hash(("real_var", self.fullpath()))
 
     def __repr__(self) -> str:
-        return "var({})".format(self.fullpath())
+        return self.fullpath()
 
 
 class FreshVar(VerificationVar):
@@ -165,7 +165,7 @@ class FreshVar(VerificationVar):
         return hash(("fresh_var", self.fullpath()))
 
     def __repr__(self) -> str:
-        return f"var_id({self.fullpath()})"
+        return self.fullpath()
 
 
 def to_real_var(e: Expression, props: Optional[list[VarProp]] = None) -> Optional[RealVar]:
@@ -260,8 +260,17 @@ class VerificationBinder:
     def touch(self, var: VerificationVar) -> None:
         self.has_been_touched.add(var)
 
+    def is_active(self, var: VerificationVar) -> bool:
+        """Checks if a variable or any sub variables are in var_versions.
+        """
+        if var in self.var_versions:
+            return True
+        for dep in self.dependencies.get(var, set()):
+            if self.is_active(dep):
+                return True
+        return False
+
     def store_type(self, var: VerificationVar, var_type: Type) -> None:
-        print("storing type", var_type, "for", var)
         self.var_types[var] = var_type
 
     def type_for(self, var: VerificationVar) -> Optional[Type]:
@@ -292,6 +301,24 @@ class VerificationBinder:
             self.var_versions[var] = fresh_var
             return fresh_var
 
+    def invalidate_var(self, var: VerificationVar) -> None:
+        """Invalidate a variable, forcing the creation of a new smt variable
+        with no associated constraints the next time it is used.
+        """
+        # TODO: do I need to delete from self.var_types? I don't think so,
+        # because has_been_touched fulfills that role.
+        if var in self.var_versions:
+            self.has_been_touched.add(var)
+            del self.var_versions[var]
+        for dep in self.dependencies.get(var, set()):
+            self.invalidate_var(dep)
+
+    def invalidate_vars_in_expr(self, expr: Expression) -> None:
+        """Invalidate all mentions of `RealVar`s in an expression.
+        """
+        invalidator = Invalidator(self)
+        expr.accept(invalidator)
+
     def load_from_type(
             self,
             expr_var: VerificationVar,
@@ -304,11 +331,34 @@ class VerificationBinder:
         # that. That way refinement variables would know they're talking
         # about the other properties when those come in...
 
-        # TODO check that other stuff doesn't somehow get added before type
-        # constraints can be added.
+        # So fully explaining this: first we check that neither the variable nor
+        # any dependencies are in var_versions. This is a heuristic to determine
+        # whether or not we've loaded from something and that's currently
+        # active, in which case another load would duplicate stuff. (This may
+        # need revision.)
+        # We then check that it hasn't been loaded from before -- so that we
+        # only have one load for non-const stuff -- or that the type we'd be
+        # loading from is const.
+        # TODO: I think there's a better way to do this that involves marking
+        # variables as constant in a separate set/map. A problem with this is
+        # that stuff that's const could be invalidated by being assigned to.
+        # TODO: currently I think there are problems, because e.g. something
+        # depending on another value might be unloaded, have that value change,
+        # and then be reloaded with a new condition. So that's a question.
+        # TODO: further, the declaration of a parent as Const should probably
+        # influence the child properties? E.g. declaring self as Const in
+        # forward should make any Conv2ds Const inside forward.
+        # NOTE: also, I kind of want to make ints automatically const, but that
+        # can wait. Also if they're properties they can change? Hmmmmm. Yeah,
+        # dealing with that is a headache that can wait. (The parent might be
+        # passed as an argument and invalidate them as children, which I'd have
+        # to distinguish from them being invalidated for being used on their
+        # own.)
         if (isinstance(expr_type, BaseType)
                 and expr_type.refinements
-                and expr_var not in self.has_been_touched):
+                and not self.is_active(expr_var)
+                and (expr_var not in self.has_been_touched
+                    or expr_type.refinements.is_const)):
             self.touch(expr_var)
             var_bindings: list[tuple[str, VerificationVar]] = [
                     # TODO: this is kind of a hack. Ideally I would
@@ -361,52 +411,6 @@ class VerificationBinder:
             base.props.append(prop)
         self.currently_loading_from_var = False
 
-
-    # Okay, it looks like vars need to be annotating every part of the
-    # expression, so this won't work.
-    # def try_expr_from_var(
-    #         self,
-    #         var: VerificationVar,
-    #         *, ctx: Context
-    # ) -> Optional[Expression]:
-    #     """This attempts to build an expression that will type check from
-    #     a verification variable and the types stored in var_types.
-    #     """
-    #     # Here we determine the var where we first have a type tracked
-    #     # and the remaining properties.
-    #     base = var.copy_base()
-    #     props: list[VarProp] = var.props.copy()
-    #     base_type: Optional[Type] = None
-    #     while True:
-    #         if (typ := self.type_for(base)):
-    #             base_type = typ
-
-    #         if props == []:
-    #             break
-    #         else:
-    #             prop = props.pop(0)
-    #             if isinstance(prop, int):
-    #                 break
-    #             base.props.append(prop)
-
-    #     if base_type is None:
-    #         return None
-
-    #     def wrap_expr(e: Expression, props: list[VarProp]) -> Expression:
-    #         for prop in props:
-    #             if isinstance(prop, int):
-    #                 e = IndexExpr(e, IntExpr(prop))
-    #             elif isinstance(prop, str):
-    #                 e = MemberExpr(e, prop)
-    #             else:
-    #                 assert False, "impossible"
-    #         return e
-
-    #     node = Var(base.props[-1], base_type)
-    #     base_expr = wrap_expr(NameExpr(base.name), base.props)
-    #     base_expr.node = node
-    #     full_expr = wrap_expr(base_expr, props)
-
     def load_from_sub_exprs(
             self,
             expr: Expression,
@@ -437,24 +441,6 @@ class VerificationBinder:
             expr_type = self.chk.expr_checker.accept(acc_expr)
             self.store_type(var, expr_type)
             self.load_from_type(var, expr_type, ctx=ctx)
-
-    def invalidate_var(self, var: VerificationVar) -> None:
-        """Invalidate a variable, forcing the creation of a new smt variable
-        with no associated constraints the next time it is used.
-        """
-        # TODO: do I need to delete from self.var_types? I don't think so,
-        # because has_been_touched fulfills that role.
-        if var in self.var_versions:
-            del self.var_versions[var]
-        if var in self.dependencies:
-            for dep in self.dependencies[var]:
-                self.invalidate_var(dep)
-
-    def invalidate_vars_in_expr(self, expr: Expression) -> None:
-        """Invalidate all mentions of `RealVar`s in an expression.
-        """
-        invalidator = Invalidator(self)
-        expr.accept(invalidator)
 
     @contextmanager
     def var_binding(self, ref_var: Optional[str], term_var: VerificationVar) -> Iterator[None]:
@@ -656,20 +642,22 @@ class VerificationBinder:
         var = RealVar(arg_name)
         self.add_var(var, typ, ctx=ctx)
 
+    def alias_as(self, source: VerificationVar, alias: VerificationVar) -> None:
+        if source in self.var_versions:
+            self.var_versions[alias] = self.var_versions[source]
+            del self.var_versions[source]
+        for dep in self.dependencies.get(source, set()):
+            prop_len = len(source.props)
+            assert source.props == dep.props[:prop_len]
+            new_alias = alias.extend(dep.props[prop_len:])
+            self.dependencies.setdefault(alias, set()).add(new_alias)
+            self.alias_as(dep, new_alias)
+
     def add_lvalue(self, lvalue: Lvalue, typ: Type) -> None:
         var = to_real_var(lvalue)
         if var is None:
             return
         self.add_var(var, typ, ctx=lvalue)
-
-    def alias_to(self, alias: VerificationVar, source: VerificationVar) -> None:
-        if source in self.var_versions:
-            self.var_versions[alias] = self.var_versions[source]
-        for dep in self.dependencies.get(source, set()):
-            prop_len = len(source.props)
-            assert source.props == dep.props[:prop_len]
-            new_alias = alias.extend(dep.props[prop_len:])
-            self.alias_to(new_alias, dep)
 
     def add_inferred_lvalue(self, lvalue: Lvalue, typ: Type) -> None:
         """Add a verification var with constraints based on the inferred type.
@@ -685,8 +673,10 @@ class VerificationBinder:
         self.touch(var)
 
         if info.verification_var:
-            self.alias_to(var, info.verification_var)
+            print("aliasing")
+            self.alias_as(info.verification_var, var)
         else:
+            print("rebinding")
             bindings: list[tuple[str, VerificationVar]] = [
                     ("RSelf", var)
                     ]
@@ -694,6 +684,41 @@ class VerificationBinder:
                 bindings.append((info.var.name, var))
             with self.var_bindings(bindings):
                 self.add_constraints(info.constraints, ctx=lvalue)
+
+    def overwrite_inferred_lvalue(
+            self,
+            lvalue: Lvalue,
+            rvalue: Expression,
+            rvalue_type: Type
+    ) -> None:
+        """This is used to overwrite an lvalue that was not declared with a
+        type.
+        """
+        rvar, _ = self.var_from_expr(rvalue, rvalue_type)
+        lvar = to_real_var(lvalue)
+        if not (rvar and lvar):
+            return
+
+        intermediary = self.fresh_verification_var()
+        self.alias_as(rvar, intermediary)
+        self.invalidate_vars_in_expr(lvalue)
+        self.invalidate_vars_in_expr(rvalue)
+
+        self.alias_as(intermediary, lvar)
+
+    def overwrite_lvalue(
+            self,
+            lvalue: Lvalue,
+            lvalue_type: Type,
+            rvalue: Expression,
+            rvalue_type: Type
+    ) -> None:
+        """The goal is to have this be a toggle that switches between checking
+        the value against a declared type and just overwritting an lvalue with
+        an inferred type.
+        """
+        # TODO: I can use a flag on the type to say whether a refinement type
+        # was inferred or not, and only set it for the end thing amabobber.
 
     def fail(self, msg: str, context: Context) -> None:
         self.msg.fail(msg, context)
@@ -729,7 +754,7 @@ class VerificationBinder:
     def real_var_from_expr(
             self,
             expr: Expression,
-            expr_type: Optional[Type]
+            expr_type: Type
     ) -> Optional[VerificationVar]:
         """Attempt to directly convert an expression to a real verification
         variable.
@@ -739,9 +764,7 @@ class VerificationBinder:
         if var is None:
             return None
 
-        if expr_type is None:
-            assert False, "I don't think this will ever be triggered"
-            expr_type = self.chk.expr_checker.accept(expr)
+        assert expr_type is not None, "Just a quick check"
 
         self.store_type(var, expr_type)
         self.load_from_type(var, expr_type, ctx=expr)
@@ -859,9 +882,14 @@ class VerificationBinder:
         if constraints == []:
             return True
 
-        print("Variables:", self.smt_variables)
-        print("Given:", self.smt_solver)
-        print("Goal:", constraints)
+        SHOULD_LOG = False
+
+        if SHOULD_LOG:
+            print("var_versions:", {k: v
+                for k, v in self.var_versions.items()
+                if isinstance(k, RealVar)})
+            print("Given:", self.smt_solver)
+            print("Goal:", constraints)
 
         # Basically, in order to prove that the constraints are "valid" --
         # evaluates to true for all possible variable values -- we put a not
@@ -874,9 +902,9 @@ class VerificationBinder:
             print("exception:", exc)
             return False
         print("Result:", "valid" if result == z3.unsat else "invalid")
-        if result == z3.sat:
+        if result == z3.sat and SHOULD_LOG:
             print("Counter example:", self.smt_solver.model())
-        print()
+            print()
         return result == z3.unsat
 
     def check_subsumption(self,
@@ -904,14 +932,18 @@ class VerificationBinder:
         if info is None:
             return
 
-        FAIL_MSG = "refinement type check failed"
+        def check():
+            FAIL_MSG = "refinement type check failed"
+            constraints = self.translate_all(info.constraints, ctx=ctx)
+            if constraints != []:
+                print(f"Location: {ctx.line}:{ctx.column}")
+            if not self.check_implication(constraints):
+                self.fail(FAIL_MSG, ctx)
 
         if expr is None or info.var is None:
             # assert expr is not None or info.var is not None
 
-            constraints = self.translate_all(info.constraints, ctx=ctx)
-            if not self.check_implication(constraints):
-                self.fail(FAIL_MSG, ctx)
+            check()
             return
         else:
             var, has_sent_error = self.var_from_expr(expr, expr_type)
@@ -920,9 +952,7 @@ class VerificationBinder:
                     self.fail('could not understand expression', ctx)
                 return
             with self.var_binding(info.var.name, var):
-                constraints = self.translate_all(info.constraints, ctx=ctx)
-                if not self.check_implication(constraints):
-                    self.fail(FAIL_MSG, ctx)
+                check()
                 return
 
     def check_call_args(
@@ -938,7 +968,7 @@ class VerificationBinder:
             return
 
         expected_type, expr, expr_type = bindings[0]
-        info = expected_type.refinements
+        info = expected_type.refinements if isinstance(expected_type, BaseType) else None
 
         if info is None:
             self.check_call_args(bindings[1:], ctx=ctx)
@@ -947,6 +977,8 @@ class VerificationBinder:
         def check():
             FAIL_MSG = "refinement type check failed"
             constraints = self.translate_all(info.constraints, ctx=ctx)
+            if constraints != []:
+                print(f"Location: {ctx.line}:{ctx.column}")
             if not self.check_implication(constraints):
                 self.fail(FAIL_MSG, ctx)
 

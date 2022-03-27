@@ -41,7 +41,7 @@ from mypy.types import (
     TypeOfAny, Instance, RawExpressionType, ProperType, UnionType, ConstraintSynType,
     RefinementVar, RefinementLiteral, RefinementConstraint, RefinementTuple,
     RefinementExpr, ConstraintKind, RefinementBinOpKind, RefinementBinOp,
-    RefinementSelf,
+    RefinementSelf, RefinementConst,
 )
 from mypy import defaults
 from mypy import message_registry, errorcodes as codes

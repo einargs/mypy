@@ -21,7 +21,7 @@ from mypy.types import (
     TYPE_ALIAS_NAMES, FINAL_TYPE_NAMES, LITERAL_TYPE_NAMES, ANNOTATED_TYPE_NAMES,
     RefinementVar, RefinementConstraint, RefinementInfo, BaseType, ConstraintSynType,
     RefinementSelf, RefinementExpr, RefinementLiteral, RefinementBinOp,
-    RefinementTuple,
+    RefinementTuple, RefinementConst,
 )
 
 from mypy.nodes import (
@@ -394,9 +394,14 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                 local_var = None
                 con_args = t.args[1:]
 
+            is_const = False
             constraints: list[RefinementConstraint] = []
             for c in con_args:
-                if isinstance(c, ConstraintSynType):
+                if self.is_refinement_const(c):
+                    if is_const:
+                        self.fail("Multiple Const in one refinement type", c)
+                    is_const = True
+                elif isinstance(c, ConstraintSynType):
                     if not self.verify_refinement_vars_in_constraint(c.value):
                         return AnyType(TypeOfAny.from_error)
                     constraints.append(c.value)
@@ -406,7 +411,7 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                             "refinement variable.", c)
                     return AnyType(TypeOfAny.from_error)
 
-            root.refinements = RefinementInfo(local_var, constraints)
+            root.refinements = RefinementInfo(local_var, constraints, is_const)
 
             return root
         elif fullname in ('typing_extensions.Required', 'typing.Required'):
@@ -436,6 +441,15 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
         sym = self.lookup_qualified("RSelf", ctx)
         return sym and sym.node and sym.node.fullname == "refinement.RSelf"
 
+    def is_refinement_const(self, typ: Type) -> bool:
+        """Check if the unbound type is a reference to refinement const.
+        """
+        if not isinstance(typ, UnboundType) or typ.name != "Const":
+            return False
+
+        sym = self.lookup_qualified("Const", typ)
+        return sym and sym.node and sym.node.fullname == "refinement.Const"
+
     def validate_refinement_var(self, var: RefinementVar) -> bool:
         """Verify that a refinement variable was actually declared as a
         refinement variable.
@@ -451,7 +465,7 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
             return False
 
         if not isinstance(sym.node, RefinementVarExpr):
-            self.fail("type is not declarated as a refinement var", t)
+            self.fail("type is not declarated as a refinement var", var)
             return False
 
         return True
