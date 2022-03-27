@@ -522,10 +522,14 @@ class RefinementVar(RefinementExpr):
                 if self.props == [] and isinstance(expr, IntExpr):
                     return RefinementLiteral(expr.value)
                 elif (isinstance(expr, TupleExpr)
-                        and all(isinstance(e, IntExpr) for e in expr.items)
-                        and len(self.props) == 1
-                        and self.props[0] < len(expr.items)):
-                    return RefinementLiteral(expr.items[self.props[0]].value)
+                        and all(isinstance(e, IntExpr) for e in expr.items)):
+                    if (len(self.props) == 1
+                            and self.props[0] < len(expr.items)):
+                        return RefinementLiteral(
+                                expr.items[self.props[0]].value)
+                    elif self.props == []:
+                        return RefinementTuple([RefinementLiteral(item.value)
+                            for item in expr.items])
         return self
 
     def __eq__(self, other: Any) -> bool:

@@ -591,6 +591,29 @@ class VerificationBinder:
         else:
             return expr
 
+    def translate_kind(
+            self,
+            left: Union[SMTExpr, VerificationVar],
+            kind: ConstraintKind,
+            right: Union[SMTExpr, VerificationVar]
+    ) -> SMTConstraint:
+        left = self.resolve_expr(left)
+        right = self.resolve_expr(right)
+        if kind == ConstraintKind.EQ:
+            return left == right
+        elif kind == ConstraintKind.NOT_EQ:
+            return left != right
+        elif kind == ConstraintKind.LT:
+            return left < right
+        elif kind == ConstraintKind.LT_EQ:
+            return left <= right
+        elif kind == ConstraintKind.GT:
+            return left > right
+        elif kind == ConstraintKind.GT_EQ:
+            return left >= right
+        else:
+            assert False, "impossible by enum"
+
     def translate_to_constraints(
             self,
             con: RefinementConstraint,
@@ -602,21 +625,33 @@ class VerificationBinder:
         """
         left_tuple = isinstance(con.left, RefinementTuple)
         right_tuple = isinstance(con.right, RefinementTuple)
-        if left_tuple and right_tuple:
-            self.fail("Should not compare two tuple expressions", ctx)
+
+        if ((left_tuple or right_tuple)
+                and con.kind not in (ConstraintKind.EQ, ConstraintKind.NOT_EQ)):
+            self.fail("Can only use == and != with tuple expressions", ctx)
             return []
+
+        if left_tuple and right_tuple:
+            if len(con.left.items) != len(con.right.items):
+                self.fail("Should not compare tuple expressions "
+                        "of different length", ctx)
+                return []
+
+            results = []
+            for left, right in zip(con.left.items, con.right.items):
+                results.append(self.translate_kind(
+                    self.translate_expr(left),
+                    con.kind,
+                    self.translate_expr(right)))
+            return results
         elif left_tuple or right_tuple:
             tuple_expr: RefinementTuple = cast(RefinementTuple,
                     con.left if left_tuple else con.right)
             var_expr = con.right if left_tuple else con.left
 
-            if not isinstance(var_expr, RefinementVar):
+            if not isinstance(var_expr, (RefinementVar, RefinementSelf)):
                 self.fail("Can only compare a tuple expression to a "
                     "refinement variable", ctx)
-                return []
-
-            if con.kind != ConstraintKind.EQ:
-                self.fail("Can only use == with tuple expressions", ctx)
                 return []
 
             results: list[SMTConstraint] = []
@@ -625,11 +660,10 @@ class VerificationBinder:
                 indexed_var = self.translate_expr(var_expr, ext_props=[i])
                 # We don't technically need to figure out left and right,
                 # but it's helpful.
-                left = self.resolve_expr(
-                        tuple_item if left_tuple else indexed_var)
-                right = self.resolve_expr(
-                        indexed_var if left_tuple else tuple_item)
-                results.append(left == right)
+                left = tuple_item if left_tuple else indexed_var
+                right = indexed_var if left_tuple else tuple_item
+
+                results.append(self.translate_kind(left, con.kind, right))
             return results
         else:
             left = self.translate_expr(con.left)
@@ -727,23 +761,6 @@ class VerificationBinder:
             kind: ConstraintKind,
             right: Union[SMTExpr, VerificationVar],
             *, ctx: Context) -> list[SMTConstraint]:
-        def translate_kind(
-                left: SMTExpr, kind: ConstraintKind, right: SMTExpr
-                ) -> SMTConstraint:
-            if kind == ConstraintKind.EQ:
-                return left == right
-            elif kind == ConstraintKind.NOT_EQ:
-                return left != right
-            elif kind == ConstraintKind.LT:
-                return left < right
-            elif kind == ConstraintKind.LT_EQ:
-                return left <= right
-            elif kind == ConstraintKind.GT:
-                return left > right
-            elif kind == ConstraintKind.GT_EQ:
-                return left >= right
-            else:
-                assert False, "impossible by enum"
             
         if kind in (ConstraintKind.EQ, ConstraintKind.NOT_EQ):
             if isinstance(left, VerificationVar) and isinstance(right, VerificationVar):
@@ -752,24 +769,14 @@ class VerificationBinder:
                 if props:
                     result = []
                     for prop in props:
-                        left_idx = self.get_smt_expr(left.extend([prop]))
-                        right_idx = self.get_smt_expr(right.extend([prop]))
-                        result.append(translate_kind(left_idx, kind, right_idx))
+                        result.append(self.translate_kind(
+                            left.extend([prop]), kind, right.extend([prop])))
                 else:
-                    result = [translate_kind(
-                        self.get_smt_expr(left),
-                        kind,
-                        self.get_smt_expr(right))]
+                    result = [self.translate_kind(left, kind, right)]
             else:
-                result = [translate_kind(
-                        self.resolve_expr(left),
-                        kind,
-                        self.resolve_expr(right))]
+                result = [self.translate_kind(left, kind, right)]
         else:
-            result = [translate_kind(
-                    self.resolve_expr(left),
-                    kind,
-                    self.resolve_expr(right))]
+            result = [self.translate_kind(left, kind, right)]
         
         converted = [z3.BoolVal(r, ctx=self.smt_context) if isinstance(r, bool) else r
                 for r in result]

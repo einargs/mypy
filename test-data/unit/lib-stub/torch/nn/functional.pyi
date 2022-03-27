@@ -9,16 +9,6 @@ S = RefinementVar('S')
 def relu(t: Annotated[Tensor, T]) -> Annotated[Tensor, S,
         T.shape == S.shape]: ...
 
-def relu4(t: Annotated[Tensor, T]) -> Annotated[Tensor, S,
-        T.shape[0] == S.shape[0],
-        T.shape[1] == S.shape[1],
-        T.shape[2] == S.shape[2],
-        T.shape[3] == S.shape[3]]: ...
-
-def relu2(t: Annotated[Tensor, T]) -> Annotated[Tensor, S,
-        T.shape[0] == S.shape[0],
-        T.shape[1] == S.shape[1]]: ...
-
 KS = RefinementVar('KS')
 SD = RefinementVar('SD')
 PD = RefinementVar('PD')
@@ -38,13 +28,6 @@ def max_pool2d(
         ]: ...
 
 def log_softmax(
-        t: Annotated[Tensor, T],
-        dim: int
-) -> Annotated[Tensor, S,
-        T.shape[0] == S.shape[0],
-        T.shape[1] == S.shape[1]]: ...
-
-def log_softmax_p(
         t: Annotated[Tensor, T],
         dim: int
 ) -> Annotated[Tensor, S,

@@ -30,14 +30,10 @@ class Conv2d:
     ) -> Annotated[None,
             RSelf.in_channels == IC,
             RSelf.out_channels == OC,
-            RSelf.kernel_size[0] == KS[0],
-            RSelf.kernel_size[1] == KS[1],
-            RSelf.stride[0] == SD[0],
-            RSelf.stride[1] == SD[1],
-            RSelf.padding[0] == PD[0],
-            RSelf.padding[1] == PD[1],
-            RSelf.dilation[0] == DL[0],
-            RSelf.dilation[1] == DL[1]]:
+            RSelf.kernel_size == KS,
+            RSelf.stride == SD,
+            RSelf.padding == PD,
+            RSelf.dilation == DL]:
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -61,24 +57,6 @@ class Conv2d:
                 - SELF.dilation[1]
                 * (SELF.kernel_size[1] - 1)
                 - 1) // SELF.stride[1] + 1,
-            ]: ...
-
-class Dropout4:
-    def __init__(self, p: float): ...
-
-    def __call__(self, t: Annotated[Tensor, T]) -> Annotated[Tensor, S,
-            T.shape[0] == S.shape[0],
-            T.shape[1] == S.shape[1],
-            T.shape[2] == S.shape[2],
-            T.shape[3] == S.shape[3],
-            ]: ...
-
-class Dropout2:
-    def __init__(self, p: float): ...
-
-    def __call__(self, t: Annotated[Tensor, T]) -> Annotated[Tensor, S,
-            T.shape[0] == S.shape[0],
-            T.shape[1] == S.shape[1],
             ]: ...
 
 class Dropout:
