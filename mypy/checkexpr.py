@@ -1119,11 +1119,11 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             ret_var = self.chk.vc_binder.var_for_call_expr(
                     callee.ret_type, bindings, ctx=context)
             subst_bindings = [(name, expr) for (name, expr, _) in bindings]
-            print("bindings", bindings)
-            print("subst_bindings", subst_bindings)
+            #print("bindings", bindings)
+            #print("subst_bindings", subst_bindings)
             ref_info = callee.ret_type.refinements.substitute(ret_var, subst_bindings)
             ret_type = callee.ret_type.copy_with_refinements(ref_info)
-            print("after substitute", ret_type)
+            #print("after substitute", ret_type)
             return ret_type, callee
         else:
             return callee.ret_type, callee

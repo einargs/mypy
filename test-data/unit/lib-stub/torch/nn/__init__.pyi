@@ -81,6 +81,12 @@ class Dropout2:
             T.shape[1] == S.shape[1],
             ]: ...
 
+class Dropout:
+    def __init__(self, p: float): ...
+
+    def __call__(self, t: Annotated[Tensor, T]) -> Annotated[Tensor, S,
+            T.shape == S.shape]: ...
+
 IF = RefinementVar('IF')
 OF = RefinementVar('OF')
 

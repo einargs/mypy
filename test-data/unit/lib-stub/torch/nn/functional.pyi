@@ -6,6 +6,9 @@ from torch import Tensor
 T = RefinementVar('T')
 S = RefinementVar('S')
 
+def relu(t: Annotated[Tensor, T]) -> Annotated[Tensor, S,
+        T.shape == S.shape]: ...
+
 def relu4(t: Annotated[Tensor, T]) -> Annotated[Tensor, S,
         T.shape[0] == S.shape[0],
         T.shape[1] == S.shape[1],
@@ -40,3 +43,9 @@ def log_softmax(
 ) -> Annotated[Tensor, S,
         T.shape[0] == S.shape[0],
         T.shape[1] == S.shape[1]]: ...
+
+def log_softmax_p(
+        t: Annotated[Tensor, T],
+        dim: int
+) -> Annotated[Tensor, S,
+        T.shape == S.shape]: ...

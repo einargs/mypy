@@ -74,10 +74,10 @@ up.
 
 # TODO
 ## Tomorrow
-0. Get RSelf working for methods.
-1. Figure out final stuff.
-2. Write the pytorch stubs.
-3. Figure out default variables.
+0. add tests to `check-refinement.test` for tuple equality when they're
+   properties.
+1. Write up current Const semantics.
+2. Figure out default variables.
 4. Fix the RSelf bound variable hack I'm using right now.
    - Develop refinement variables local to a given type for use in the RSelf
      stuff?

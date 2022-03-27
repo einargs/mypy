@@ -588,3 +588,39 @@ def f1(input: Annotated[Container, V, V.x == 0]) -> None:
     b: Annotated[Container, B, B.x == 4] = incCon(a)
 
 [builtins fixtures/ops.pyi]
+
+[case testRefinementTupleEquality]
+from typing import Tuple
+from typing_extensions import Annotated
+from refinement import *
+
+def f0(
+    a: Annotated[Tuple[int, int], A]
+) -> Annotated[Tuple[int, int], V, A == V]:
+    return a
+
+def f1(
+    a: Annotated[Tuple[int, int], A]
+) -> Annotated[Tuple[int, int], V, A == V]: ...
+
+def f2(
+    a: Annotated[Tuple[int, ...], A]
+) -> Annotated[Tuple[int, ...], V, A == V]:
+    return a
+
+def f3(
+    a: Annotated[Tuple[int, ...], A]
+) -> Annotated[Tuple[int, ...], V, A == V]: ...
+
+def block0() -> Annotated[None, V]:
+    x: Annotated[Tuple[int, int], X, X == (1,2)] = f0((1,2))
+    y: Annotated[Tuple[int, int], Y, Y == (3,1)] = f1((3,1))
+    z: Annotated[Tuple[int, ...], Z, Z == (3,1)] = f2(f0(y))
+
+def block1() -> Annotated[None, V]:
+    x: Annotated[Tuple[int, ...], X, X == (1,2)] = f2((1,2))
+    y: Annotated[Tuple[int, ...], Y, Y == (3,1)] = f3((3,1))
+    z: Annotated[Tuple[int, ...], Z, Z == (3,1)] = f2(f3(y))
+
+# TODO: tests for when the tuple is a property.
+[builtins fixtures/primitives.pyi]
