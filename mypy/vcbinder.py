@@ -331,6 +331,11 @@ class VerificationBinder:
                     base_type, prop, ctx=ctx)
             if base_type is None:
                 return None
+            else:
+                # We just passed through this looking through a parent with the
+                # type, so it shouldn't have a type.
+                assert base not in self.var_types
+                self.var_types[base] = base_type
 
         return base_type
 
