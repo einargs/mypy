@@ -49,6 +49,7 @@ from mypy.errors import Errors
 from mypy.options import Options
 from mypy.reachability import mark_block_unreachable
 from mypy.util import bytes_to_human_readable_repr
+from mypy.var_prop import MetaProp
 
 try:
     # pull this into a final variable to make mypyc be quiet about the
@@ -1398,6 +1399,7 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
         if isinstance(node, ast3.Constant) and isinstance(node.value, int):
             return RefinementLiteral(node.value,
                     line=node.lineno, column=node.col_offset)
+
         elif isinstance(node, ast3.BinOp):
             if isinstance(node.op, ast3.Add):
                 kind = RefinementBinOpKind.add
@@ -1414,16 +1416,31 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
             if left and right:
                 return RefinementBinOp(left, kind, right,
                         line=node.lineno, column=node.col_offset)
+            else:
+                return None
+
+        elif (isinstance(node, ast3.Call)
+                and isinstance(node.func, ast3.Name)
+                and node.func.id == "len"
+                and len(node.args) == 1):
+            value = convert_sub_expr(node.args[0])
+            if isinstance(value, (RefinementVar, RefinementSelf)):
+                value.props.append(MetaProp.len)
+                # As a call this changes the start position
+                value.line = node.lineno
+                value.column = node.col_offset
+                return value
+            else:
+                return None
 
         elif isinstance(node, ast3.Attribute):
             value = convert_sub_expr(node.value)
             if isinstance(value, (RefinementVar, RefinementSelf)):
-                if isinstance(value, RefinementSelf):
-                    print("Adding", node.attr, "to", value)
                 value.props.append(node.attr)
                 return value
             else:
                 return None
+
         elif (isinstance(node, ast3.Subscript)
                 and isinstance(node.slice, ast3.Constant)
                 and isinstance(node.slice.value, int)):
@@ -1431,6 +1448,9 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
             if isinstance(value, (RefinementVar, RefinementSelf)):
                 value.props.append(node.slice.value)
                 return value
+            else:
+                return None
+
         elif isinstance(node, ast3.Name):
             if node.id == "RSelf":
                 return RefinementSelf(line=node.lineno, column=node.col_offset)
