@@ -583,6 +583,54 @@ class RefinementSelf(RefinementExpr):
         return prop_list_str("RSelf", self.props)
 
 
+class RefinementFold(RefinementExpr):
+    """A fold expression.
+    """
+
+    __slots__ = ('acc_var', 'cur_var', 'expr', 'fold_expr',
+            'folded_var', 'start', 'end')
+
+    def __init__(
+        self,
+        acc_var: str,
+        cur_var: str,
+        fold_expr: RefinementExpr,
+        folded_var: Union[RefinementVar, RefinementSelf],
+        start: Optional[RefinementExpr],
+        end: Optional[RefinementExpr],
+        line: int = -1, column: int = -1
+    ) -> None:
+        self.acc_var = acc_var
+        self.cur_var = cur_var
+        self.fold_expr = fold_expr
+        self.folded_var = folded_var
+        self.start = start
+        self.end = end
+
+    def serialize(self) -> JsonDict:
+        return {'.class': 'RefinementFold',
+                'acc_var': self.acc_var,
+                'cur_var': self.cur_var,
+                'fold_expr': self.fold_expr.serialize(),
+                'folded_var': self.folded_var.serialize(),
+                'start': None if self.start is None else self.start.serialize(),
+                'end': None if self.end is None else self.end.serialize(),
+                }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> 'RefinementFold':
+        assert data['.class'] == 'RefinementFold'
+        return RefinementFold(
+                data['acc_var'],
+                data['cur_var'],
+                deserialize_refinement_expr(data['fold_expr']),
+                RefinementVar.deserialize(data['folded_var']),
+                None if data['start'] is None else
+                    deserialize_refinement_expr(data['start']),
+                None if data['end'] is None else
+                    deserialize_refinement_expr(data['end']))
+
+
 class RefinementClause(mypy.nodes.Context):
     """Something that can fit inside one of the clauses of a refinement
     annotation.

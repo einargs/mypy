@@ -15,12 +15,13 @@ PD = RefinementVar('PD')
 DL = RefinementVar('DL')
 
 def max_pool2d(
-        t: Annotated[Tensor, T],
+        t: Annotated[Tensor, T, len(T.shape) == 4],
         kernel_size: Annotated[Tuple[int, int], KS],
         stride: Annotated[Tuple[int, int], SD],
         padding: Annotated[Tuple[int, int], PD],
         dilation: Annotated[Tuple[int, int], DL]
 ) -> Annotated[Tensor, S,
+        len(S.shape) == 4,
         T.shape[0] == S.shape[0],
         T.shape[1] == S.shape[1],
         S.shape[2] == (T.shape[2] + 2*PD[0] - (KS[0] - 1) - 1)//SD[0] + 1,

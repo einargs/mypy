@@ -44,8 +44,11 @@ class Conv2d:
 
     def __call__(
             self: Annotated['Conv2d', SELF],
-            t: Annotated[Tensor, T, T.shape[1] == SELF.in_channels]
+            t: Annotated[Tensor, T,
+                T.shape[1] == SELF.in_channels,
+                len(T.shape) == 4]
     ) -> Annotated[Tensor, S,
+            len(S.shape) == 4,
             S.shape[0] == T.shape[0],
             S.shape[1] == SELF.out_channels,
             S.shape[2] == (T.shape[2] + 2
@@ -82,7 +85,8 @@ class Linear:
 
     def __call__(
             self: Annotated['Linear', SELF],
-            t: Annotated[Tensor, T, T.shape[1]==SELF.in_features]
+            t: Annotated[Tensor, T,
+                len(T.shape) == 2,
+                T.shape[1]==SELF.in_features]
     ) -> Annotated[Tensor, S,
-            S.shape[0] == T.shape[0],
-            S.shape[1] == SELF.out_features]: ...
+            S.shape == (T.shape[0], SELF.out_features)]: ...

@@ -21,7 +21,7 @@ from mypy.types import (
     TYPE_ALIAS_NAMES, FINAL_TYPE_NAMES, LITERAL_TYPE_NAMES, ANNOTATED_TYPE_NAMES,
     RefinementVar, RefinementConstraint, RefinementInfo, BaseType, ConstraintSynType,
     RefinementSelf, RefinementExpr, RefinementLiteral, RefinementBinOp,
-    RefinementTuple, RefinementConst,
+    RefinementTuple, RefinementConst, RefinementFold,
 )
 
 from mypy.nodes import (
@@ -488,6 +488,8 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                 return verify_sub_expr(e.left) and verify_sub_expr(e.right)
             elif isinstance(e, RefinementLiteral):
                 return True
+            elif isinstance(e, RefinementFold):
+                return verify_sub_expr(e.folded_var)
             else:
                 assert False, "No other cases"
 

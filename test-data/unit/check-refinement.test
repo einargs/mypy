@@ -624,3 +624,21 @@ def block1() -> Annotated[None, V]:
 
 # TODO: tests for when the tuple is a property.
 [builtins fixtures/primitives.pyi]
+
+[case testRefinementFold]
+from typing import Tuple
+from typing_extensions import Annotated, TypeAlias
+from refinement import *
+
+def f0(
+    arr: Annotated[Tuple[int, int, int, int, int], A]
+) -> Annotated[Tuple[int, int, int], B, B == fold(lambda acc, cur: acc * cur, A[1:4])]: ...
+
+def block0() -> Annotated[None, V]:
+    a: Annotated[Tuple[int, int, int], A] = (1,2,3)
+    x: Annotated[Tuple[int, ...], X, len(X) == 3] = a
+
+def block1() -> Annotated[None, V]:
+    a: Annotated[Tuple[int, int, int, int, int], A, A == (1, 2, 3, 4, 5)] = (1, 2, 3, 4, 5)
+    x: Annotated[Tuple[int, int, int], X, X == (1, 2*3*4, 5)] = f0(a)
+[builtins fixtures/primitives.pyi]

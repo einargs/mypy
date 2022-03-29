@@ -41,7 +41,7 @@ from mypy.types import (
     TypeOfAny, Instance, RawExpressionType, ProperType, UnionType, ConstraintSynType,
     RefinementVar, RefinementLiteral, RefinementConstraint, RefinementTuple,
     RefinementExpr, ConstraintKind, RefinementBinOpKind, RefinementBinOp,
-    RefinementSelf, RefinementConst,
+    RefinementSelf, RefinementConst, RefinementFold,
 )
 from mypy import defaults
 from mypy import message_registry, errorcodes as codes
@@ -1469,6 +1469,58 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
             else:
                 values.append(v)
         return RefinementTuple(values, line=node.lineno, column=node.col_offset)
+    if (isinstance(node, ast3.Call)
+            and isinstance(node.func, ast3.Name)
+            and node.func.id == "fold"):
+        if len(node.args) != 2:
+            return None
+
+        fold_lambda = node.args[0]
+        if not (isinstance(fold_lambda, ast3.Lambda)
+                and len(fold_lambda.args.args) == 2):
+            return None
+
+        fold_args = fold_lambda.args.args
+        acc_var = fold_args[0].arg
+        cur_var = fold_args[1].arg
+        fold_expr = convert_sub_expr(fold_lambda.body)
+
+        if fold_expr is None:
+            return None
+
+        subscript = node.args[1]
+        if not (isinstance(subscript, ast3.Subscript)
+                and isinstance(subscript.slice, ast3.Slice)
+                and subscript.slice.step is None):
+            return None
+
+        folded_var = convert_sub_expr(subscript.value)
+        if not isinstance(folded_var, (RefinementVar, RefinementSelf)):
+            return None
+
+        if subscript.slice.lower is None:
+            start = None
+        else:
+            start = convert_sub_expr(subscript.slice.lower)
+            if start is None:
+                return None
+
+        if subscript.slice.upper is None:
+            end = None
+        else:
+            end = convert_sub_expr(subscript.slice.upper)
+            if end is None:
+                return None
+
+        return RefinementFold(
+                acc_var,
+                cur_var,
+                fold_expr,
+                folded_var,
+                start,
+                end,
+                line=node.lineno,
+                column=node.col_offset)
     else:
         return convert_sub_expr(node)
 
