@@ -21,11 +21,10 @@ def max_pool2d(
         padding: Annotated[Tuple[int, int], PD],
         dilation: Annotated[Tuple[int, int], DL]
 ) -> Annotated[Tensor, S,
-        len(S.shape) == 4,
-        T.shape[0] == S.shape[0],
-        T.shape[1] == S.shape[1],
-        S.shape[2] == (T.shape[2] + 2*PD[0] - (KS[0] - 1) - 1)//SD[0] + 1,
-        S.shape[3] == (T.shape[3] + 2*PD[1] - (KS[1] - 1) - 1)//SD[1] + 1,
+        S.shape == (T.shape[0],
+            T.shape[1],
+            (T.shape[2] + 2 * PD[0] - (KS[0] - 1) - 1) // SD[0] + 1,
+            (T.shape[3] + 2 * PD[1] - (KS[1] - 1) - 1) // SD[1] + 1),
         ]: ...
 
 def log_softmax(

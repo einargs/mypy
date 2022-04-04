@@ -405,6 +405,10 @@ class RefinementExpr(mypy.nodes.Context):
     def deserialize(cls, data: JsonDict) -> 'RefinementExpr':
         raise NotImplementedError('Cannot deserialize {} instance'.format(cls.__name__))
 
+    @abstractmethod
+    def __repr__(self) -> str:
+        raise NotImplementedError("Cannot get representation of {}".format(self.__class__.__name__))
+
 
 def deserialize_refinement_expr(data: JsonDict) -> RefinementExpr:
     classname = data['.class']
@@ -423,6 +427,9 @@ class RefinementLiteral(RefinementExpr):
     def __init__(self, value: int, line: int = -1, column: int = -1):
         super().__init__(line, column)
         self.value = value
+
+    def __repr__(self) -> str:
+        return str(self.value)
 
     def serialize(self) -> JsonDict:
         return {'.class': 'RefinementLiteral',
@@ -463,6 +470,17 @@ class RefinementBinOp(RefinementExpr):
         right = self.right.substitute(bindings)
         return RefinementBinOp(left, self.kind, right)
 
+    def __repr__(self) -> str:
+        if self.kind == RefinementBinOpKind.add:
+            kind = "+"
+        elif self.kind == RefinementBinOpKind.sub:
+            kind = "-"
+        elif self.kind == RefinementBinOpKind.mult:
+            kind = "*"
+        elif self.kind == RefinementBinOpKind.floor_div:
+            kind = "//"
+        return "({} {} {})".format(self.left, kind, self.right)
+
     def serialize(self) -> JsonDict:
         return {'.class': 'RefinementBinOp',
                 'left': self.left.serialize(),
@@ -489,6 +507,13 @@ class RefinementTuple(RefinementExpr):
             line: int = -1, column: int = -1):
         super().__init__(line, column)
         self.items = items
+
+    def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
+        return RefinementTuple([item.substitute(bindings) for item in self.items],
+                line=self.line, column=self.column)
+
+    def __repr__(self) -> str:
+        return "({})".format(", ".join(str(e) for e in self.items))
 
     def serialize(self) -> JsonDict:
         return {'.class': 'RefinementTuple',
@@ -607,6 +632,12 @@ class RefinementFold(RefinementExpr):
         self.start = start
         self.end = end
 
+    def __repr__(self) -> str:
+        start = "" if self.start is None else self.start
+        end = "" if self.end is None else self.end
+        return (f"fold(lambda {self.acc_var}, {self.cur_var}: {self.fold_expr}, "
+                    "{self.folded_var}[{start}:{end}])")
+
     def serialize(self) -> JsonDict:
         return {'.class': 'RefinementFold',
                 'acc_var': self.acc_var,
@@ -629,6 +660,7 @@ class RefinementFold(RefinementExpr):
                     deserialize_refinement_expr(data['start']),
                 None if data['end'] is None else
                     deserialize_refinement_expr(data['end']))
+
 
 
 class RefinementClause(mypy.nodes.Context):
@@ -2706,32 +2738,9 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
         if base.refinements is None:
             return base_str
 
-        def expr_str(e: RefinementExpr) -> str:
-            if isinstance(e, RefinementTuple):
-                return "({})".format(", ".join(expr_str(e) for e in e.items))
-            elif isinstance(e, (RefinementVar, RefinementSelf)):
-                return str(e)
-            elif isinstance(e, RefinementBinOp):
-                if e.kind == RefinementBinOpKind.add:
-                    kind = "+"
-                elif e.kind == RefinementBinOpKind.sub:
-                    kind = "-"
-                elif e.kind == RefinementBinOpKind.mult:
-                    kind = "*"
-                elif e.kind == RefinementBinOpKind.floor_div:
-                    kind = "//"
-                left = expr_str(e.left)
-                right = expr_str(e.right)
-                return "{} {} {}".format(left, kind, right)
-            elif isinstance(e, RefinementLiteral):
-                return str(e.value)
-            else:
-                assert False, "no other cases"
-                return str(e)
-
         def constraint_str(c: RefinementConstraint) -> str:
-            left = expr_str(c.left)
-            right = expr_str(c.right)
+            left = str(c.left)
+            right = str(c.right)
             if c.kind == ConstraintKind.EQ:
                 kind = "=="
             if c.kind == ConstraintKind.NOT_EQ:
@@ -2752,7 +2761,7 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
         if base.refinements.var is None:
             return "{}{{{}}}".format(base_str, constraints_str)
         else:
-            var_str = expr_str(base.refinements.var)
+            var_str = str(base.refinements.var)
 
             const_str = "const " if base.refinements.is_const else ""
 

@@ -31,6 +31,9 @@ from mypy.messages import MessageBuilder
 from mypy.var_prop import VarProp, prop_list_str, MetaProp
 import z3
 
+import traceback
+import sys
+
 
 def is_refined_type(typ: Type) -> TypeGuard[BaseType]:
     """Checks if a type is a base type and has refinement info.
@@ -191,6 +194,10 @@ def to_real_var(e: Expression, props: Optional[list[VarProp]] = None) -> Optiona
         return None
 
 
+def is_len_var(var: VerificationVar) -> bool:
+    return len(var.props) > 0 and var.props[-1] == MetaProp.len
+
+
 def is_int_type(typ: Type) -> bool:
     if isinstance(typ, Instance):
         return typ.type.fullname == "builtins.int"
@@ -207,20 +214,63 @@ def is_int_tuple(typ: Type) -> bool:
             and all(is_int_type(item) for item in typ.items)))
 
 
-class VarKind(enum.Enum):
+class VarKind:
     """The kinds of types that smt variables can represent.
     """
-    int = enum.auto()
-    int_tuple = enum.auto()
+
+    def int() -> 'VarKind':
+        return VarKindInt()
+
+    def int_tuple(size: Optional[int]) -> 'VarKind':
+        return VarKindTuple(size)
+
+    def is_int_tuple(obj: Any) -> 'TypeGuard[VarKindTuple]':
+        return isinstance(obj, VarKindTuple)
+
+
+class VarKindInt(VarKind):
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, VarKindInt):
+            return True
+        elif isinstance(other, VarKindTuple):
+            return False
+        else:
+            return NotImplemented
+
+    def __repr__(self) -> str:
+        return "VarKind.int()"
+
+
+class VarKindTuple(VarKind):
+    def __init__(self, size: Optional[int]):
+        self.size = size
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, VarKindInt):
+            return False
+        elif isinstance(other, VarKindTuple):
+            return self.size == other.size
+        else:
+            return NotImplemented
+
+    def __repr__(self) -> str:
+        return f"VarKind.int_tuple({self.size})"
 
 
 def var_kind_for(typ: Type) -> Optional[VarKind]:
     if is_int_type(typ):
-        return VarKind.int
-    elif is_int_tuple(typ):
-        return VarKind.int_tuple
+        return VarKind.int()
+    elif (isinstance(typ, Instance)
+            and typ.type.fullname == "builtins.tuple"
+            and len(typ.args) == 1
+            and is_int_type(typ.args[0])):
+        return VarKind.int_tuple(None)
+    elif (isinstance(typ, TupleType)
+            and all(is_int_type(item) for item in typ.items)):
+        return VarKind.int_tuple(len(typ.items))
     else:
         return None
+
 
 def is_array_access(var: VerificationVar) -> bool:
     return (len(var.props) > 0
@@ -229,16 +279,34 @@ def is_array_access(var: VerificationVar) -> bool:
 
 
 SMTVar: TypeAlias = z3.ArithRef
-SMTTuple: TypeAlias = z3.ArrayRef
+SMTTuple: TypeAlias = z3.DatatypeRef
+SMTTupleSort: TypeAlias = z3.DatatypeSortRef
 SMTExpr: TypeAlias = Union[SMTVar, z3.IntNumRef, SMTTuple]
 SMTConstraint: TypeAlias = z3.BoolRef
 
 
+def idx_tuple(ref: SMTTuple, i: int) -> SMTVar:
+    return ref.sort().accessor(0, i)(ref)
+
+
+def tuple_arity(ref: SMTTuple) -> int:
+    return ref.sort().constructor(0).arity()
+
+
 def kind_of_smt(expr: SMTExpr) -> VarKind:
     if isinstance(expr, SMTTuple):
-        return VarKind.int_tuple
+        return VarKind.int_tuple(tuple_arity(expr))
     else:
-        return VarKind.int
+        return VarKind.int()
+
+
+class TranslationError(Exception):
+    pass
+
+
+class UnknownTupleSize(TranslationError):
+    def __init__(self, var: VerificationVar):
+        self.var = var
 
 
 class VerificationBinder:
@@ -278,6 +346,9 @@ class VerificationBinder:
         # the "RSelf" string to deal with RSelf, which should be safe, but we'd
         # rather not.
         self.bound_var_to_name: Dict[str, VerificationVar] = {}
+
+        # Caches generated tuple sorts.
+        self.tuple_sorts = {}
 
         # Are we currently loading info from a variable and thus don't need to
         # recurse deeper?
@@ -348,8 +419,8 @@ class VerificationBinder:
         elif isinstance(prop, MetaProp):
             if prop == MetaProp.len:
                 if (isinstance(typ, TupleType) or (isinstance(typ, Instance)
-                    and typ.type.fullname == "builtins.tuple"
-                    and len(typ.args) == 1)):
+                        and typ.type.fullname == "builtins.tuple"
+                        and len(typ.args) == 1)):
                     return self.chk.named_type("builtins.int")
                 else:
                     self.fail("tried to call len() on non-tuple type", ctx)
@@ -402,29 +473,50 @@ class VerificationBinder:
 
     def kind_for(
         self,
-        var: VerificationVar,
+        var: Union[SMTExpr, VerificationVar],
         *, ctx: Context
     ) -> Optional[VarKind]:
         """Convenience version of type_for that applies var_kind_for.
         """
-        typ = self.type_for(var, ctx=ctx)
-        if typ is not None:
-            return var_kind_for(typ)
-        elif var in self.var_versions:
-            return kind_of_smt(self.var_versions[var])
+        if isinstance(var, VerificationVar):
+            typ = self.type_for(var, ctx=ctx)
+            if var in self.var_versions:
+                return kind_of_smt(self.var_versions[var])
+            elif typ is not None:
+                return var_kind_for(typ)
+            else:
+                return None
         else:
-            return None
+            return kind_of_smt(var)
+
+    def get_tuple_sort(self, size: int) -> SMTTupleSort:
+        if size not in self.tuple_sorts:
+            tuple_type = z3.Datatype(f"{size} tuple", ctx=self.smt_context)
+            I = z3.IntSort(ctx=self.smt_context)
+            tuple_type.declare("mk", *[(f"project{i}", I) for i in range(size)])
+            sort = tuple_type.create()
+            self.tuple_sorts[size] = sort
+            return sort
+        else:
+            return self.tuple_sorts[size]
+
+    def build_tuple(self, members: list[SMTExpr]) -> SMTTuple:
+        sort = self.get_tuple_sort(len(members))
+
+        tup = sort.mk(*members)
+
+        return tup
 
     def fresh_verification_var(self) -> FreshVar:
         self.next_id += 1
         return FreshVar(self.next_id)
 
-    def fresh_smt_tuple(self, var: VerificationVar) -> SMTTuple:
+    def fresh_smt_tuple(self, var: VerificationVar, size: int) -> SMTTuple:
         self.next_id += 1
         name = var.fullpath()
-        sort = z3.IntSort(ctx=self.smt_context)
-        smt_tuple = z3.Array(f"{name}#{self.next_id}", sort, sort)
-        return smt_tuple
+        sort = self.get_tuple_sort(size)
+        smt_var = z3.Const(f"{name}#{self.next_id}", sort)
+        return smt_var
 
     def fresh_smt_var(self, var: VerificationVar) -> SMTVar:
         self.next_id += 1
@@ -444,33 +536,44 @@ class VerificationBinder:
             return self.var_versions[var]
         else:
             if (is_array_access(var)):
-                assert kind != VarKind.int_tuple
+                assert not VarKind.is_int_tuple(kind)
                 parent = var.copy_base(var.props[:-1])
-                if parent in self.var_versions:
-                    assert isinstance(self.var_versions[parent], z3.z3.ArrayRef)
-                else:
-                    self.var_versions[parent] = self.fresh_smt_tuple(parent)
-                return self.var_versions[parent][var.props[-1]]
-            if len(var.props) > 0 and var.props[-1] == MetaProp.len:
-                assert kind != VarKind.int_tuple
-                parent = var.copy_base(var.props[:-1])
-                arr = self.get_smt_expr(parent, kind=VarKind.int_tuple)
+                idx = var.props[-1]
 
-                fresh_var = arr[-1]
-                if (typ := self.type_for(parent, ctx=ctx)) is not None:
-                    if (isinstance(typ, TupleType)
-                            and all(is_int_type(i) for i in typ.items)):
-                        self.add_smt_constraints([
-                            fresh_var == len(typ.items)])
+                tup = self.get_smt_expr(parent, kind=VarKind.int_tuple(None))
+                assert isinstance(tup, SMTTuple)
+                return idx_tuple(tup, idx)
+            elif is_len_var(var):
+                assert False, "I'm currently disabling length stuff"
+                # assert kind != VarKind.int_tuple
+                # parent = var.copy_base(var.props[:-1])
+                # arr = self.get_smt_expr(parent, kind=VarKind.int_tuple)
+                # value = IntVal(tuple_arity(arr), ctx=self.smt_context)
 
-                self.var_versions[var] = fresh_var
-                return fresh_var
+                # self.var_versions[var] = value
+
+                # fresh_var = arr[-1]
+                # if (typ := self.type_for(parent, ctx=ctx)) is not None:
+                #     if (isinstance(typ, TupleType)
+                #             and all(is_int_type(i) for i in typ.items)):
+                #         self.add_smt_constraints([
+                #             fresh_var == len(typ.items)])
+
+                # self.var_versions[var] = fresh_var
+                # return value
             else:
                 if kind is None:
                     kind = self.kind_for(var, ctx=ctx)
+                elif VarKind.is_int_tuple(kind) and kind.size is None:
+                    if (new_kind := self.kind_for(var, ctx=ctx)) is not None:
+                        if VarKind.is_int_tuple(new_kind) and new_kind.size is not None:
+                            kind = new_kind
 
-                if kind == VarKind.int_tuple:
-                    fresh_var = self.fresh_smt_tuple(var)
+                if VarKind.is_int_tuple(kind):
+                    if kind.size is None:
+                        raise UnknownTupleSize(var)
+                    else:
+                        fresh_var = self.fresh_smt_tuple(var, kind.size)
                 else:
                     fresh_var = self.fresh_smt_var(var)
 
@@ -487,16 +590,14 @@ class VerificationBinder:
             parent = var.copy_base(var.props[:-1])
             idx = var.props[-1]
             # bc of is_array_access
-            assert isinstance(idx, int) 
-            if (parent_array := self.var_versions.get(parent)) is not None:
-                new_array = self.fresh_smt_tuple(parent)
-                self.var_versions[parent] = new_array
-                assert isinstance(parent_array, z3.z3.ArrayRef)
-                x = z3.Int('x', ctx=self.smt_context)
-                self.add_smt_constraints([
-                    z3.ForAll([x], z3.Implies(x != idx,
-                        parent_array[x] == new_array[x])),
-                ])
+            assert isinstance(idx, int)
+            if (parent_tuple := self.var_versions.get(parent)) is not None:
+                size = tuple_arity(parent_tuple)
+                fresh_idx = self.fresh_smt_var(var)
+                new_tuple = self.build_tuple([
+                    idx_tuple(parent_tuple, i) if i != idx else fresh_idx
+                    for i in range(size)])
+                self.var_versions[parent] = new_tuple
         if var in self.var_versions:
             self.has_been_touched.add(var)
             del self.var_versions[var]
@@ -669,7 +770,7 @@ class VerificationBinder:
         if ext_props is None:
             ext_props = []
         if isinstance(expr, RefinementLiteral):
-            return z3.IntVal(expr.value, ctx=self.smt_context)
+            return expr.value
         elif isinstance(expr, RefinementBinOp):
             left = self.resolve_expr(self.translate_expr(expr.left))
             right = self.resolve_expr(self.translate_expr(expr.right))
@@ -712,9 +813,16 @@ class VerificationBinder:
             constraints: list[RefinementConstraint],
             *, ctx: Context
     ) -> list[SMTConstraint]:
-        return [smt_c
-                for c in constraints
-                for smt_c in self.translate_to_constraints(c, ctx=ctx)]
+        try:
+            return [self.translate_to_constraints(c, ctx=ctx)
+                    for c in constraints]
+        except UnknownTupleSize as exc:
+            print("ERROR: Accessed member of undefined tuple var", exc.var)
+            print(traceback.format_exc(limit=10))
+            self.fail(f"Accessed member of undefined tuple var {exc.var}", ctx)
+            return []
+        except TranslationError:
+            return []
 
     def resolve_expr(
         self,
@@ -723,38 +831,67 @@ class VerificationBinder:
     ) -> SMTExpr:
         if isinstance(expr, VerificationVar):
             return self.get_smt_expr(expr, kind=kind)
+        elif isinstance(expr, int):
+            return z3.IntVal(expr, ctx=self.smt_context)
         else:
             return expr
-
-    def smt_tuple_equality(
-        self,
-        left: SMTTuple,
-        right: SMTTuple,
-    ) -> SMTConstraint:
-        left_len = left[-1]
-        right_len = right[-1]
-        x = z3.Int('x', ctx=self.smt_context)
-        return z3.And([
-            left_len == right_len,
-            z3.ForAll([x], z3.Implies(z3.And(0 <= x, x < left_len),
-                left[x] == right[x])),
-        ])
-
 
     def translate_kind(
             self,
             left_expr: Union[SMTExpr, VerificationVar],
             kind: ConstraintKind,
-            right_expr: Union[SMTExpr, VerificationVar]
+            right_expr: Union[SMTExpr, VerificationVar],
+            *, ctx: Context
     ) -> SMTConstraint:
-        left = self.resolve_expr(left_expr)
-        right = self.resolve_expr(right_expr)
-        if kind == ConstraintKind.EQ:
-            if (kind_of_smt(left) == VarKind.int_tuple
-                    and kind_of_smt(right) == VarKind.int_tuple):
-                return self.smt_tuple_equality(left, right)
+        left_kind = self.kind_for(left_expr, ctx=ctx)
+        right_kind = self.kind_for(right_expr, ctx=ctx)
+
+        def should_override(
+                first: Optional[VarKind],
+                second: Optional[VarKind]
+        ) -> bool:
+            """Should the first var kind override the second?
+            """
+            if first == second:
+                return False
+            elif (VarKind.is_int_tuple(first)
+                    and first.size is not None):
+                return (second is None or
+                        (VarKind.is_int_tuple(second)
+                            and second.size is None))
             else:
-                return left == right
+                return first == VarKind.int() and second is None
+
+        def is_ambigous(kind: Optional[VarKind]) -> bool:
+            return VarKind.is_int_tuple(kind) and kind.size is None
+
+        if should_override(left_kind, right_kind):
+            right_kind = left_kind
+        elif should_override(right_kind, left_kind):
+            left_kind = right_kind
+
+        if is_ambigous(left_kind):
+            self.fail(f"unknown size of {left_expr}", ctx)
+            raise TranslationError()
+
+        if is_ambigous(left_kind):
+            self.fail(f"unknown size of {left_expr}", ctx)
+            raise TranslationError()
+
+        if left_kind != right_kind:
+            self.fail(f"type mismatch between {left_expr} and {right_expr}", ctx)
+            raise TranslationError()
+
+        if (kind not in (ConstraintKind.EQ, ConstraintKind.NOT_EQ)
+                and VarKind.is_int_tuple(left_kind)):
+            self.fail("Can only use == or != on tuples", ctx)
+            raise TranslationError()
+
+        left = self.resolve_expr(left_expr, kind=left_kind)
+        right = self.resolve_expr(right_expr, kind=right_kind)
+
+        if kind == ConstraintKind.EQ:
+            return left == right
         elif kind == ConstraintKind.NOT_EQ:
             return left != right
         elif kind == ConstraintKind.LT:
@@ -775,51 +912,51 @@ class VerificationBinder:
     ) -> SMTTuple:
         folded_var = self.translate_expr(expr.folded_var)
         assert isinstance(folded_var, VerificationVar)
-        arr_len_var = folded_var.extend([MetaProp.len])
-        out_arr_var = self.fresh_verification_var()
 
-        in_arr = self.get_smt_expr(
-                folded_var, kind=VarKind.int_tuple)
-        out_arr = self.get_smt_expr(
-                out_arr_var, kind=VarKind.int_tuple)
-        arr_len = self.get_smt_expr(
-                folded_var.extend([MetaProp.len]),
-                kind=VarKind.int)
-        out_len = self.get_smt_expr(
-                out_arr_var.extend([MetaProp.len]),
-                kind=VarKind.int)
+        in_tuple = self.get_smt_expr(folded_var)
+        in_len = tuple_arity(in_tuple)
 
         if expr.start:
             start = self.resolve_expr(
                     self.translate_expr(expr.start),
-                    kind=VarKind.int)
+                    kind=VarKind.int())
+            if not isinstance(start, int):
+                self.fail(f"{expr.start} was not concrete integer", ctx)
+                raise TranslationError()
         else:
-            start = IntVal(0, ctx=self.smt_context)
+            start = 0
         if expr.end:
             end = self.resolve_expr(
                     self.translate_expr(expr.end),
-                    kind=VarKind.int)
+                    kind=VarKind.int())
+            if not isinstance(end, int):
+                self.fail(f"{expr.end} was not concrete integer", ctx)
+                raise TranslationError()
         else:
-            end = arr_len
+            end = in_len
 
-        I = z3.IntSort(ctx=self.smt_context)
-        x = z3.Int('x', ctx=self.smt_context)
+        offset = end - start
 
-        # Get the function
-        self.next_id += 1
-        f = z3.Function(f"f#{self.next_id}", I, I)
+        if offset < 2:
+            # the fold does nothing
+            return in_tuple
 
-        acc_expr = f(x + 1)
-        cur_expr = in_arr[x]
+        acc_expr, cur_expr = z3.Ints('acc cur', ctx=self.smt_context)
 
-        def interpret(e: RefinementExpr) -> Optional[SMTExpr]:
-            if isinstance(e, RefinementVar) and e.props == []:
-                if e.name == expr.acc_var:
+        def interpret(e: RefinementExpr) -> SMTExpr:
+            if isinstance(e, RefinementVar):
+                if e.props == [] and e.name == expr.acc_var:
                     return acc_expr
-                elif e.name == expr.cur_var:
+                if e.props == [] and e.name == expr.cur_var:
                     return cur_expr
                 else:
-                    return None
+                    var = self.translate_expr(e)
+                    if isinstance((val := self.var_versions.get(var)), int):
+                        return z3.IntVal(val, ctx=self.smt_context)
+            elif isinstance(e, RefinementSelf):
+                var = self.translate_expr(e)
+                if isinstance((val := self.var_versions.get(var)), int):
+                    return z3.IntVal(val, ctx=self.smt_context)
             elif isinstance(e, RefinementBinOp):
                 left = interpret(e.left)
                 right = interpret(e.right)
@@ -833,28 +970,30 @@ class VerificationBinder:
                     return left / right
             elif isinstance(e, RefinementLiteral):
                 return z3.IntVal(e.value, ctx=self.smt_context)
+
+            self.fail(f"did not understand {e} in fold expression", ctx)
+            raise TranslationError()
+
+        raw_fold_body = interpret(expr.fold_expr)
+        fold_body = raw_fold_body
+
+        for i in range(start, end-1):
+            fold_body = z3.substitute(fold_body,
+                    (cur_expr, idx_tuple(in_tuple, i)))
+            if i == end-2:
+                fold_body = z3.substitute(fold_body,
+                        (acc_expr, idx_tuple(in_tuple, end-1)))
             else:
-                return None
+                fold_body = z3.substitute(fold_body,
+                        (acc_expr, raw_fold_body))
+        print("fold_body:", fold_body)
 
-        fold_body = interpret(expr.fold_expr)
+        before_start = [idx_tuple(in_tuple, i) for i in range(start)]
+        after_end = [idx_tuple(in_tuple, i) for i in range(end, in_len)]
 
-        offset = (end - 1) - start
-        self.add_smt_constraints([
-            out_len == arr_len - offset,
-            0 < arr_len,
-            end <= arr_len,
-            0 <= start,
-            start < end,
-            z3.ForAll([x], z3.Implies(z3.And(start <= x, x+1 < end),
-                f(x) == fold_body)),
-            f(end - 1) == in_arr[end - 1],
-            z3.ForAll([x], z3.Implies(z3.And(0 <= x, x < start),
-                in_arr[x] == out_arr[x])),
-            z3.ForAll([x], z3.Implies(z3.And(end <= x, x < arr_len),
-                in_arr[x] == out_arr[x - offset])),
-            out_arr[start] == f(start),
-        ])
-        return out_arr
+        out_tuple = self.build_tuple(before_start + [fold_body] + after_end)
+
+        return out_tuple
 
     def translate_tuple(
         self,
@@ -862,19 +1001,11 @@ class VerificationBinder:
         *, ctx: Context
     ) -> SMTTuple:
         if isinstance(expr, RefinementTuple):
-            arr_var = self.fresh_verification_var()
-            cons: list[SMTConstraint] = []
-            for i, item_expr in enumerate(expr.items):
-                idx_var = arr_var.extend([i])
-                idx = self.get_smt_expr(idx_var, kind=VarKind.int)
-                item = self.resolve_expr(
-                        self.translate_expr(item_expr),
-                        kind=VarKind.int)
-                cons.append(idx == item)
-            smt_len = self.get_smt_expr(arr_var.extend([MetaProp.len]))
-            cons.append(len(expr.items) == smt_len)
-            self.add_smt_constraints(cons)
-            return self.get_smt_expr(arr_var, kind=VarKind.int_tuple)
+            smt_tuple = self.build_tuple([self.resolve_expr(
+                self.translate_expr(item_expr),
+                kind=VarKind.int())
+                for item_expr in expr.items])
+            return smt_tuple
         elif isinstance(expr, RefinementFold):
             return self.translate_fold(expr, ctx=ctx)
         else:
@@ -884,14 +1015,39 @@ class VerificationBinder:
             self,
             con: RefinementConstraint,
             *, ctx: Context
-    ) -> list[SMTConstraint]:
+    ) -> SMTConstraint:
         """Translate a refinement constraint to smt solver constraints,
         splitting it into multiple constraints if it contains a refinement
         tuple.
         """
-        def makes_tuple(expr: RefinementExpr
+        def makes_tuple(
+                expr: RefinementExpr
                 ) -> TypeGuard[Union[RefinementTuple, RefinementFold]]:
             return isinstance(expr, (RefinementTuple, RefinementFold))
+
+        def to_len_constraint(
+                first: Union[SMTExpr, VerificationVar],
+                second: Union[SMTExpr, VerificationVar]
+        ) -> Optional[Tuple[VerificationVar, int]]:
+            test = lambda a, b: (isinstance(b, int)
+                    and isinstance(a, VerificationVar)
+                    and is_len_var(a))
+            if test(first, second):
+                return (first.copy_base(first.props[:-1]), second)
+            elif test(second, first):
+                return (second.copy_base(second.props[:-1]), first)
+            else:
+                return None
+
+        def tuple_expr_constraint(
+                tuple_expr: Union[RefinementTuple, RefinementFold],
+                var_expr: RefinementExpr
+                ) -> Tuple[SMTTuple, SMTExpr]:
+            smt_tuple = self.translate_tuple(tuple_expr, ctx=ctx)
+            smt_var = self.resolve_expr(
+                    self.translate_expr(var_expr),
+                    kind=kind_of_smt(smt_tuple))
+            return smt_tuple, smt_var
 
         left_tuple = makes_tuple(con.left)
         right_tuple = makes_tuple(con.right)
@@ -899,116 +1055,100 @@ class VerificationBinder:
         if ((left_tuple or right_tuple)
                 and con.kind not in (ConstraintKind.EQ, ConstraintKind.NOT_EQ)):
             self.fail("Can only use == and != with tuple expressions", ctx)
-            return []
+            raise TranslationError()
 
         if left_tuple and right_tuple:
             if (isinstance(con.left, RefinementTuple)
-                    and isinstance(con.right, RefinementTuple)):
-                if len(con.left.items) != len(con.right.items):
-                    self.fail("Should not compare tuple expressions "
-                            "of different length", ctx)
-                    return []
+                    and isinstance(con.right, RefinementTuple)
+                    and len(con.left.items) != len(con.right.items)):
+                self.fail("Should not compare tuple expressions "
+                        "of different length", ctx)
+                raise TranslationError()
+            left = self.translate_tuple(con.left, ctx=ctx)
+            right = self.translate_tuple(con.right, ctx=ctx)
+            return self.translate_kind(left, con.kind, right, ctx=ctx)
 
-                left = translate_tuple(con.left)
-                right = translate_tuple(con.right)
-                return [self.translate_kind(
-                    left, con.kind, right)]
-                #results = []
-                #for left, right in zip(con.left.items, con.right.items):
-                #    results.append(self.translate_kind(
-                #        self.translate_expr(left),
-                #        con.kind,
-                #        self.translate_expr(right)))
-                #return results
-            else:
-                left = self.translate_tuple(con.left, ctx=ctx)
-                right = self.translate_tuple(con.right, ctx=ctx)
-                return [self.translate_kind(left, con.kind, right)]
-        elif left_tuple or right_tuple:
-            def trans(e: RefinementExpr):
-                if makes_tuple(e):
-                    return self.translate_tuple(e, ctx=ctx)
-                else:
-                    return self.resolve_expr(
-                            self.translate_expr(e),
-                            kind=VarKind.int_tuple)
-            left = trans(con.left)
-            right = trans(con.right)
-            return [self.translate_kind(left, con.kind, right)]
-        #elif left_tuple or right_tuple:
-        #    tuple_expr: RefinementTuple = cast(RefinementTuple,
-        #            con.left if left_tuple else con.right)
-        #    var_expr = con.right if left_tuple else con.left
+        elif makes_tuple(con.left) and not makes_tuple(con.right):
+            assert con.kind in (ConstraintKind.EQ, ConstraintKind.NOT_EQ)
+            left, right = tuple_expr_constraint(con.left, con.right)
+            return self.translate_kind(left, con.kind, right, ctx=ctx)
 
-        #    if not isinstance(var_expr, (RefinementVar, RefinementSelf)):
-        #        self.fail("Can only compare a tuple expression to a "
-        #            "refinement variable", ctx)
-        #        return []
+        elif not makes_tuple(con.left) and makes_tuple(con.right):
+            assert con.kind in (ConstraintKind.EQ, ConstraintKind.NOT_EQ)
+            right, left = tuple_expr_constraint(con.right, con.left)
+            return self.translate_kind(left, con.kind, right, ctx=ctx)
+        # elif left_tuple or right_tuple:
+        #     tuple_expr: RefinementTuple = cast(RefinementTuple,
+        #             con.left if left_tuple else con.right)
+        #     var_expr = con.right if left_tuple else con.left
 
-        #    results: list[SMTConstraint] = []
-        #    for i, v in enumerate(tuple_expr.items):
-        #        tuple_item = self.resolve_expr(
-        #                self.translate_expr(v), kind=VarKind.int)
-        #        indexed_var = self.resolve_expr(
-        #                self.translate_expr(var_expr, ext_props=[i]),
-        #                kind=VarKind.int)
-        #        # We don't technically need to figure out left and right,
-        #        # but it's helpful.
-        #        left = tuple_item if left_tuple else indexed_var
-        #        right = indexed_var if left_tuple else tuple_item
+        #     if not isinstance(var_expr, (RefinementVar, RefinementSelf)):
+        #         self.fail("Can only compare a tuple expression to a "
+        #             "refinement variable", ctx)
+        #         return []
 
-        #        results.append(self.translate_kind(left, con.kind, right))
-        #    return results
+        #     results: list[SMTConstraint] = []
+        #     for i, v in enumerate(tuple_expr.items):
+        #         tuple_item = self.resolve_expr(
+        #                 self.translate_expr(v), kind=VarKind.int)
+        #         indexed_var = self.resolve_expr(
+        #                 self.translate_expr(var_expr, ext_props=[i]),
+        #                 kind=VarKind.int)
+        #         # We don't technically need to figure out left and right,
+        #         # but it's helpful.
+        #         left = tuple_item if left_tuple else indexed_var
+        #         right = indexed_var if left_tuple else tuple_item
+
+        #         results.append(self.translate_kind(left, con.kind, right))
+        #     return results
         else:
             left = self.translate_expr(con.left)
             right = self.translate_expr(con.right)
-            return [self.translate_single_constraint(
-                left, con.kind, right, ctx=ctx)]
-
-    def translate_single_constraint(self,
-            left: Union[SMTExpr, VerificationVar],
-            kind: ConstraintKind,
-            right: Union[SMTExpr, VerificationVar],
-            *, ctx: Context) -> SMTConstraint:
-        if (kind in (ConstraintKind.EQ, ConstraintKind.NOT_EQ)
-                and isinstance(left, VerificationVar)
-                and isinstance(right, VerificationVar)):
-            left_kind = self.kind_for(left, ctx=ctx)
-            right_kind = self.kind_for(right, ctx=ctx)
-            if left_kind and right_kind:
-                if left_kind != right_kind:
-                    self.fail(f"type mismatch between {left} and {right}", ctx)
-                left_expr = self.resolve_expr(left, kind=left_kind)
-                right_expr = self.resolve_expr(right, kind=right_kind)
-                result = self.translate_kind(left, kind, right)
-            elif (only_kind := left_kind or right_kind):
-                left_expr = self.resolve_expr(left, kind=only_kind)
-                right_expr = self.resolve_expr(right, kind=only_kind)
-                result = self.translate_kind(left, kind, right)
+            # Here we handle length constraints to generate information
+            # about the fucking type.
+            if (con.kind == ConstraintKind.EQ and
+                    (len_con := to_len_constraint(left, right)) is not None):
+                tuple_var, size = len_con
+                if tuple_var in self.var_versions:
+                    if tuple_arity(self.var_versions[tuple_var]) != size:
+                        self.fail(f"{tuple_var} was not of size {size}", ctx)
+                        raise TranslationError()
+                else:
+                    smt_tuple = self.fresh_smt_tuple(tuple_var, size)
+                    self.var_versions[tuple_var] = smt_tuple
+                return z3.BoolVal(True, ctx=self.smt_context)
             else:
-                result = self.translate_kind(left, kind, right)
-        else:
-            result = self.translate_kind(left, kind, right)
-        #if kind in (ConstraintKind.EQ, ConstraintKind.NOT_EQ):
-        #    if isinstance(left, VerificationVar) and isinstance(right, VerificationVar):
-        #        props = self.get_tuple_props(left, right, ctx=ctx)
-        #        print("for", left, ",", right, "props:", props)
-        #        if props:
-        #            result = []
-        #            for prop in props:
-        #                result.append(self.translate_kind(
-        #                    left.extend([prop]), kind, right.extend([prop])))
-        #        else:
-        #            result = [self.translate_kind(left, kind, right)]
-        #    else:
-        #        result = self.translate_kind(left, kind, right)
-        #else:
-        #    result = self.translate_kind(left, kind, right)
-        
-        if isinstance(result, bool):
-            return z3.BoolVal(result, ctx=self.smt_context)
-        else:
-            return result
+                return self.translate_kind(left, con.kind, right, ctx=ctx)
+
+    # def translate_single_constraint(self,
+    #         left: Union[SMTExpr, VerificationVar],
+    #         kind: ConstraintKind,
+    #         right: Union[SMTExpr, VerificationVar],
+    #         *, ctx: Context) -> SMTConstraint:
+    #     if (kind in (ConstraintKind.EQ, ConstraintKind.NOT_EQ)
+    #             and isinstance(left, VerificationVar)
+    #             and isinstance(right, VerificationVar)):
+    #         left_kind = self.kind_for(left, ctx=ctx)
+    #         right_kind = self.kind_for(right, ctx=ctx)
+    #         if left_kind and right_kind:
+    #             if left_kind != right_kind:
+    #                 self.fail(f"type mismatch between {left} and {right}", ctx)
+    #             left_expr = self.resolve_expr(left, kind=left_kind)
+    #             right_expr = self.resolve_expr(right, kind=right_kind)
+    #             result = self.translate_kind(left, kind, right, ctx=ctx)
+    #         elif (only_kind := left_kind or right_kind):
+    #             left_expr = self.resolve_expr(left, kind=only_kind)
+    #             right_expr = self.resolve_expr(right, kind=only_kind)
+    #             result = self.translate_kind(left, kind, right, ctx=ctx)
+    #         else:
+    #             result = self.translate_kind(left, kind, right, ctx=ctx)
+    #     else:
+    #         result = self.translate_kind(left, kind, right, ctx=ctx)
+    #     
+    #     if isinstance(result, bool):
+    #         return z3.BoolVal(result, ctx=self.smt_context)
+    #     else:
+    #         return result
 
     def add_bound_var(
             self,
@@ -1254,23 +1394,24 @@ class VerificationBinder:
         elif isinstance(expr, TupleExpr):
             var = self.fresh_verification_var()
             has_sent_error = False
-            len_var = self.get_smt_expr(
-                    var.extend([MetaProp.len]),
-                    kind=VarKind.int)
-            self.add_smt_constraints([len_var == len(expr.items)])
+
+            members = []
             for i, item in enumerate(expr.items):
                 if isinstance(expr_type, TupleType):
                     idx_type = expr_type.items[i]
                 else:
                     idx_type = None
-                var_idx = var.extend([i])
                 item_var, idx_error = self.var_from_expr(item, idx_type)
                 has_sent_error = has_sent_error or idx_error
                 if item_var is None:
-                    continue
-                item_smt = self.get_smt_expr(item_var)
-                idx_smt = self.get_smt_expr(var_idx)
-                self.add_smt_constraints([idx_smt == item_smt])
+                    # TODO: I'm not sure this should happen?
+                    assert False
+                    fresh_var = self.fresh_smt_var()
+                    members.append(fresh_var)
+                else:
+                    members.append(self.resolve_expr(item_var, kind=VarKind.int()))
+            smt_tuple = self.build_tuple(members)
+            self.var_versions[var] = smt_tuple
             return var, has_sent_error
         elif (is_refined_type(expr_type)
                 and expr_type.refinements
@@ -1305,13 +1446,17 @@ class VerificationBinder:
             return False
         print("Result:", "valid" if result == z3.unsat else "invalid", "raw:", result)
         if result == z3.sat and SHOULD_LOG:
-            print("var_versions:", {k: v
-                for k, v in self.var_versions.items()
-                if isinstance(k, RealVar)})
+            #print("var_versions:", {k: v
+            #    for k, v in self.var_versions.items()
+            #    if isinstance(k, RealVar)})
+            #print("Statistics:", self.smt_solver.statistics())
             model = self.smt_solver.model()
-            for k, _ in self.var_versions.items():
-                print(f"{k}:", model[v])
-            #print("Given:", self.smt_solver)
+            for k, v in self.var_versions.items():
+                if z3.is_ast(v):
+                    print(f"    {k}: {model.eval(v)}")
+                else:
+                    print(f"    {k}: {v}")
+            print("Given:", self.smt_solver)
             print("Goal:", constraints)
             #print("Counter example:", self.smt_solver.model())
             print()
@@ -1345,8 +1490,7 @@ class VerificationBinder:
         def check():
             FAIL_MSG = "refinement type check failed"
             constraints = self.translate_all(info.constraints, ctx=ctx)
-            if constraints != []:
-                print(f"Location: {ctx.line}:{ctx.column}")
+            print(f"Location: {ctx.line}:{ctx.column}")
             if not self.check_implication(constraints):
                 self.fail(FAIL_MSG, ctx)
 

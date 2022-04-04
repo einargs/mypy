@@ -11,11 +11,6 @@ S = RefinementVar('S')
 SD = RefinementVar('SD')
 ED = RefinementVar('ED')
 
-def flatten1(
-        t: Annotated[Tensor, T],
-) -> Annotated[Tensor, S,
-        S.shape == (T.shape[0], T.shape[1] * T.shape[2] * T.shape[3])]: ...
-
 def flatten(
         t: Annotated[Tensor, T],
         start: Annotated[int, SD],
