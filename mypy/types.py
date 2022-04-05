@@ -391,10 +391,13 @@ class ProperType(Type):
     __slots__ = ()
 
 
+SubstBindings: _TypeAlias = list[Tuple[str, Expression]]
+
+
 class RefinementExpr(mypy.nodes.Context):
     __slots__ = ()
 
-    def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
+    def substitute(self, bindings: SubstBindings) -> 'RefinementExpr':
         return self
 
     @abstractmethod
@@ -465,7 +468,7 @@ class RefinementBinOp(RefinementExpr):
         self.kind = kind
         self.right = right
 
-    def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
+    def substitute(self, bindings: SubstBindings) -> 'RefinementExpr':
         left = self.left.substitute(bindings)
         right = self.right.substitute(bindings)
         return RefinementBinOp(left, self.kind, right)
@@ -508,7 +511,7 @@ class RefinementTuple(RefinementExpr):
         super().__init__(line, column)
         self.items = items
 
-    def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
+    def substitute(self, bindings: SubstBindings) -> 'RefinementExpr':
         return RefinementTuple([item.substitute(bindings) for item in self.items],
                 line=self.line, column=self.column)
 
@@ -706,7 +709,7 @@ class RefinementConstraint(RefinementClause):
         self.right = right
 
     def substitute(
-            self, bindings: list[Tuple[str, Expression]]
+            self, bindings: SubstBindings
             ) -> 'RefinementConstraint':
         left = self.left.substitute(bindings)
         right = self.right.substitute(bindings)
@@ -724,6 +727,23 @@ class RefinementConstraint(RefinementClause):
                 deserialize_refinement_expr(data['left']),
                 ConstraintKind(data['kind']),
                 deserialize_refinement_expr(data['right']))
+
+    def __repr__(self) -> str:
+        left = str(self.left)
+        right = str(self.right)
+        if self.kind == ConstraintKind.EQ:
+            kind = "=="
+        if self.kind == ConstraintKind.NOT_EQ:
+            kind = "!="
+        if self.kind == ConstraintKind.LT:
+            kind = "<"
+        if self.kind == ConstraintKind.LT_EQ:
+            kind = "<="
+        if self.kind == ConstraintKind.GT:
+            kind = ">"
+        if self.kind == ConstraintKind.GT_EQ:
+            kind = ">="
+        return "{} {} {}".format(left, kind, right)
 
 
 class RefinementInfo:
@@ -764,7 +784,7 @@ class RefinementInfo:
     def substitute(
             self,
             vc_var: 'VerificationVar',
-            bindings: Bogus[list[Tuple[str, Expression]]] = _dummy
+            bindings: Bogus[SubstBindings] = _dummy
             ) -> 'RefinementInfo':
         if bindings is _dummy:
             bindings = []
@@ -803,8 +823,7 @@ class ConstraintSynType(ProperType):
         self.value = value
 
     def accept(self, visitor: 'TypeVisitor[T]') -> T:
-        # TODO: figure out a better way to handle this.
-        raise RuntimeError('Most likely Annotated was not imported.')
+        visitor.visit_constraint_syn_type(self)
 
 
 class TypeVarId:
@@ -2432,14 +2451,15 @@ class StarType(ProperType):
         assert False, "Synthetic types don't serialize"
 
 
-class UnionType(ProperType):
+class UnionType(BaseType):
     """The union type Union[T1, ..., Tn] (at least one type argument)."""
 
     __slots__ = ('items', 'is_evaluated', 'uses_pep604_syntax')
 
     def __init__(self, items: Sequence[Type], line: int = -1, column: int = -1,
-                 is_evaluated: bool = True, uses_pep604_syntax: bool = False) -> None:
-        super().__init__(line, column)
+                 is_evaluated: bool = True, uses_pep604_syntax: bool = False,
+                 refinements: Optional[RefinementInfo] = None) -> None:
+        super().__init__(line, column, refinements)
         self.items = flatten_nested_unions(items)
         self.can_be_true = any(item.can_be_true for item in items)
         self.can_be_false = any(item.can_be_false for item in items)
@@ -2499,13 +2519,27 @@ class UnionType(ProperType):
 
     def serialize(self) -> JsonDict:
         return {'.class': 'UnionType',
+                'refinements': None if self.refinements is None else self.refinements.serialize(),
                 'items': [t.serialize() for t in self.items],
                 }
 
     @classmethod
     def deserialize(cls, data: JsonDict) -> 'UnionType':
         assert data['.class'] == 'UnionType'
-        return UnionType([deserialize_type(t) for t in data['items']])
+        return UnionType(
+                [deserialize_type(t) for t in data['items']],
+                refinements=RefinementInfo.deserialize(data['refinements'])
+                    if data['refinements'] else None)
+
+    def copy_with_refinements(self, refinements: RefinementInfo) -> 'UnionType':
+        return UnionType(
+            items = self.items,
+            line = self.line,
+            column = self.column,
+            is_evaluated = self.is_evaluated,
+            uses_pep604_syntax = self.uses_pep604_syntax,
+            refinements = refinements
+        )
 
 
 class PartialType(ProperType):
@@ -2948,7 +2982,8 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
 
     def visit_union_type(self, t: UnionType) -> str:
         s = self.list_str(t.items)
-        return 'Union[{}]'.format(s)
+        txt = 'Union[{}]'.format(s)
+        return self.with_refinement(txt, t)
 
     def visit_partial_type(self, t: PartialType) -> str:
         if t.type is None:

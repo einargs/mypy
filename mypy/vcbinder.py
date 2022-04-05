@@ -198,6 +198,10 @@ def is_len_var(var: VerificationVar) -> bool:
     return len(var.props) > 0 and var.props[-1] == MetaProp.len
 
 
+def is_dup_var(var: VerificationVar) -> bool:
+    return len(var.props) > 0 and isinstance(var.props[-1], DupCall)
+
+
 def is_int_type(typ: Type) -> bool:
     if isinstance(typ, Instance):
         return typ.type.fullname == "builtins.int"
@@ -226,6 +230,26 @@ class VarKind:
 
     def is_int_tuple(obj: Any) -> 'TypeGuard[VarKindTuple]':
         return isinstance(obj, VarKindTuple)
+
+    def combine(first: 'Optional[VarKind]', second: 'Optional[VarKind]') -> 'Optional[VarKind]':
+        if first is None:
+            return second
+        if second is None:
+            return first
+
+        if first == VarKind.int() and second == VarKind.int():
+            return VarKind.int()
+        elif VarKind.is_int_tuple(first) and VarKind.is_int_tuple(second):
+            if first.size == second.size:
+                return first
+            if first.size is None:
+                return second
+            if second.size is None:
+                return first
+            # This means they're different ints
+            return None
+        else:
+            return None
 
 
 class VarKindInt(VarKind):
@@ -532,6 +556,13 @@ class VerificationBinder:
         if var in self.var_versions:
             return self.var_versions[var]
         else:
+            inferred_kind = self.kind_for(var, ctx=ctx)
+            new_kind = VarKind.combine(kind, inferred_kind)
+            if (kind or inferred_kind) is not None and new_kind is None:
+                self.fail("mismatch between passed kind {} and inferred kind "
+                        "{} for {}".format(kind, inferred_kind, var), ctx)
+                raise TranslationError()
+
             if (is_array_access(var)):
                 assert not VarKind.is_int_tuple(kind)
                 parent = var.copy_base(var.props[:-1])
