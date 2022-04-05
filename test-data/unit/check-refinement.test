@@ -642,3 +642,15 @@ def block1() -> Annotated[None, V]:
     a: Annotated[Tuple[int, int, int, int, int], A, A == (1, 2, 3, 4, 5)] = (1, 2, 3, 4, 5)
     x: Annotated[Tuple[int, int, int], X, X == (1, 2*3*4, 5)] = f0(a)
 [builtins fixtures/primitives.pyi]
+
+[case testRefinementTupleBounds]
+from typing import Tuple
+from typing_extensions import Annotated
+from refinement import *
+
+class Thing:
+    tup: Tuple[int, ...]
+
+def block0(a: Annotated[Thing, A, len(A.tup) == 2]) -> Annotated[None, V]:
+    x: Annotated[int, X, X == A.tup[2]] = a.tup[2] # E: out of bounds index a.tup[2] (length 2)
+[builtins fixtures/ops.pyi]
