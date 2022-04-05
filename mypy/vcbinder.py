@@ -28,7 +28,7 @@ from mypy.checkmember import analyze_member_access
 from mypy.visitor import ExpressionVisitor
 from mypy.literals import Key, literal, literal_hash, subkeys
 from mypy.messages import MessageBuilder
-from mypy.var_prop import VarProp, prop_list_str, MetaProp
+from mypy.var_prop import VarProp, prop_list_str, MetaProp, DupCall
 import z3
 
 import traceback
