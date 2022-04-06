@@ -406,6 +406,7 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                         return AnyType(TypeOfAny.from_error)
                     constraints.append(c.value)
                 else:
+                    print("c", c)
                     self.fail("All Annotated refinement types accept only "
                             "constraints after the type and optional "
                             "refinement variable.", c)

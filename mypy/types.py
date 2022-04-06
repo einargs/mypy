@@ -20,7 +20,7 @@ from mypy.nodes import (
 )
 from mypy.util import IdMapper
 from mypy.bogus_type import Bogus
-from mypy.var_prop import VarProp, prop_list_str
+from mypy.var_prop import VarProp, prop_list_str, DupCall
 
 if TYPE_CHECKING:
     from mypy.vcbinder import VerificationVar
@@ -545,16 +545,30 @@ class RefinementVar(RefinementExpr):
         self.props = props
 
     def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
+        def dup_size(props: list[VarProp]) -> Optional[int]:
+            if len(props) == 1 and isinstance(self.props[0], DupCall):
+                return self.props[0].size
+            else:
+                return None
+
         for name, expr in bindings:
             if name == self.name:
-                if self.props == [] and isinstance(expr, IntExpr):
-                    return RefinementLiteral(expr.value)
+                if isinstance(expr, IntExpr):
+                    if self.props == []:
+                        return RefinementLiteral(expr.value)
+                    elif (size := dup_size(self.props)) is not None:
+                        lit = RefinementLiteral(expr.value)
+                        return RefinementTuple([lit] * size)
                 elif (isinstance(expr, TupleExpr)
                         and all(isinstance(e, IntExpr) for e in expr.items)):
                     if (len(self.props) == 1
                             and self.props[0] < len(expr.items)):
                         return RefinementLiteral(
                                 expr.items[self.props[0]].value)
+                    elif (size := dup_size(self.props)) is not None:
+                        assert size == len(expr.items)
+                        return RefinementTuple([RefinementLiteral(item.value)
+                            for item in expr.items])
                     elif self.props == []:
                         return RefinementTuple([RefinementLiteral(item.value)
                             for item in expr.items])

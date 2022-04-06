@@ -654,3 +654,25 @@ class Thing:
 def block0(a: Annotated[Thing, A, len(A.tup) == 2]) -> Annotated[None, V]:
     x: Annotated[int, X, X == A.tup[2]] = a.tup[2] # E: out of bounds index a.tup[2] (length 2)
 [builtins fixtures/ops.pyi]
+
+[case testRefinementDupTuple]
+from typing import Tuple, Union
+from typing_extensions import Annotated
+from refinement import *
+
+def f0(
+    a: Annotated[Union[int, Tuple[int, int]], A]
+) -> Annotated[Tuple[int, int], V, V == dup(A, 2)]: ...
+
+def f1(
+    a: Annotated[Union[int, Tuple[int, int, int]], A]
+) -> Annotated[Tuple[int, int, int], V, V == dup(A, 3)]: ...
+
+def block0() -> Annotated[None, V]:
+    a: Annotated[Tuple[int, int], A, A == (2, 2)] = f0(2)
+    y: Annotated[int, Y, Y > 0] = 2
+    x: Annotated[Tuple[int, int], X, X[0] > 0] = f0(y)
+    b: Annotated[int, B, B > 0] = x[0]
+    c: Annotated[int, C, C > 0] = x[1]
+
+[builtins fixtures/ops.pyi]

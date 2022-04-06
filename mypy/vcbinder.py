@@ -449,6 +449,22 @@ class VerificationBinder:
                     return None
             else:
                 assert False, "impossible by enum exhaustiveness"
+        elif isinstance(prop, DupCall):
+            kind = var_kind_for(typ)
+            if kind == VarKind.int():
+                int_type = self.chk.named_type("builtins.int")
+                members = [int_type] * prop.size
+                fallback = self.chk.named_generic_type(
+                        "builtins.tuple", members)
+                return TupleType(members, fallback=fallback)
+            elif VarKind.is_int_tuple(kind):
+                if kind.size != prop.size:
+                    self.fail("mismatched sizes in dup call", ctx)
+                    raise TranslationError()
+                return typ
+            else:
+                assert False, "impossible"
+            return None
         else:
             assert False, "impossible by type of prop"
 
@@ -557,11 +573,13 @@ class VerificationBinder:
             return self.var_versions[var]
         else:
             inferred_kind = self.kind_for(var, ctx=ctx)
+            print("inferred", inferred_kind)
             new_kind = VarKind.combine(kind, inferred_kind)
             if (kind or inferred_kind) is not None and new_kind is None:
                 self.fail("mismatch between passed kind {} and inferred kind "
                         "{} for {}".format(kind, inferred_kind, var), ctx)
                 raise TranslationError()
+            kind = new_kind
 
             if (is_array_access(var)):
                 assert not VarKind.is_int_tuple(kind)
@@ -578,16 +596,30 @@ class VerificationBinder:
             elif is_len_var(var):
                 self.fail("Currently cannot access lengths of tuples", ctx)
                 raise TranslationError()
-            else:
-                if kind is None:
-                    kind = self.kind_for(var, ctx=ctx)
-                elif VarKind.is_int_tuple(kind) and kind.size is None:
-                    if (new_kind := self.kind_for(var, ctx=ctx)) is not None:
-                        if VarKind.is_int_tuple(new_kind) and new_kind.size is not None:
-                            kind = new_kind
+            elif is_dup_var(var):
+                dup_call: DupCall = var.props[-1]
+                new_kind = VarKind.int_tuple(dup_call.size)
+                kind = VarKind.combine(kind, new_kind)
+                assert kind is not None
 
+                parent = var.copy_base(var.props[:-1])
+                parent_kind = self.kind_for(parent, ctx=ctx)
+                if VarKind.is_int_tuple(parent_kind):
+                    combined = VarKind.combine(parent_kind, kind)
+                    assert combined is not None
+                    parent_smt = self.get_smt_expr(parent, kind=combined, ctx=ctx)
+                    self.var_versions[var] = parent_smt
+                    return parent_smt
+                else:
+                    parent_smt = self.get_smt_expr(parent, kind=VarKind.int(), ctx=ctx)
+                    members = [parent_smt] * dup_call.size
+                    smt_tuple = self.build_tuple(members)
+                    self.var_versions[var] = smt_tuple
+                    return smt_tuple
+            else:
                 if VarKind.is_int_tuple(kind):
                     if kind.size is None:
+                        print("undefined", var)
                         self.fail(f"Accessed member of undefined tuple var {var}", ctx)
                         raise TranslationError()
                     else:
@@ -1405,8 +1437,9 @@ class VerificationBinder:
         CONFIG = {
             "should_log": True,
             "show_statistics": False,
-            "show_vars": False,
-            "show_priors": False,
+            "show_vars": True,
+            "show_raw_vars": False,
+            "show_priors": True,
         }
 
         # Basically, in order to prove that the constraints are "valid" --
@@ -1429,8 +1462,8 @@ class VerificationBinder:
             if CONFIG["show_vars"]:
                 for k, v in self.var_versions.items():
                     if z3.is_ast(v):
-                        print(f"    {k}: {model.eval(v)}")
-                    else:
+                        print(f"    {k}: {v}  ==>  {model.eval(v)}")
+                    elif CONFIG["show_raw_vars"]:
                         print(f"    {k}: {v}")
             if CONFIG["show_priors"]:
                 print("Given:", self.smt_solver)

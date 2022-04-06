@@ -49,7 +49,7 @@ from mypy.errors import Errors
 from mypy.options import Options
 from mypy.reachability import mark_block_unreachable
 from mypy.util import bytes_to_human_readable_repr
-from mypy.var_prop import MetaProp
+from mypy.var_prop import MetaProp, DupCall
 
 try:
     # pull this into a final variable to make mypyc be quiet about the
@@ -1420,18 +1420,27 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
                 return None
 
         elif (isinstance(node, ast3.Call)
-                and isinstance(node.func, ast3.Name)
-                and node.func.id == "len"
-                and len(node.args) == 1):
-            value = convert_sub_expr(node.args[0])
-            if isinstance(value, (RefinementVar, RefinementSelf)):
-                value.props.append(MetaProp.len)
-                # As a call this changes the start position
-                value.line = node.lineno
-                value.column = node.col_offset
-                return value
-            else:
-                return None
+                and isinstance(node.func, ast3.Name)):
+            if node.func.id == "len" and len(node.args) == 1:
+                value = convert_sub_expr(node.args[0])
+                if isinstance(value, (RefinementVar, RefinementSelf)):
+                    value.props.append(MetaProp.len)
+                    # As a call this changes the start position
+                    value.line = node.lineno
+                    value.column = node.col_offset
+                    return value
+            elif (node.func.id == "dup"
+                    and len(node.args) == 2
+                    and isinstance(node.args[1], ast3.Constant)
+                    and isinstance(node.args[1].value, int)):
+                value = convert_sub_expr(node.args[0])
+                if isinstance(value, (RefinementVar, RefinementSelf)):
+                    value.props.append(DupCall(node.args[1].value))
+                    # As a call this changes the start position
+                    value.line = node.lineno
+                    value.column = node.col_offset
+                    print("value", value)
+                    return value
 
         elif isinstance(node, ast3.Attribute):
             value = convert_sub_expr(node.value)
@@ -1457,8 +1466,8 @@ def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
             else:
                 return RefinementVar(node.id,
                         line=node.lineno, column=node.col_offset)
-        else:
-            return None
+
+        return None
 
     if isinstance(node, ast3.Tuple):
         values = []

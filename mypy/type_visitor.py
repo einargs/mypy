@@ -24,6 +24,7 @@ from mypy.types import (
     UnionType, TypeVarType, PartialType, DeletedType, UninhabitedType, TypeVarLikeType,
     UnboundType, ErasedType, StarType, EllipsisType, TypeList, CallableArgument,
     PlaceholderType, TypeAliasType, ParamSpecType, get_proper_type,
+    ConstraintSynType,
 )
 
 
@@ -105,6 +106,10 @@ class TypeVisitor(Generic[T]):
 
     @abstractmethod
     def visit_type_alias_type(self, t: TypeAliasType) -> T:
+        pass
+
+    @abstractmethod
+    def visit_constraint_syn_type(self, t: ConstraintSynType) -> T:
         pass
 
 

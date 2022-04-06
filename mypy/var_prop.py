@@ -16,8 +16,11 @@ class MetaProp(Enum):
     """
     len = enum.auto()
 
+class DupCall:
+    def __init__(self, size: int):
+        self.size = size
 
-VarProp: TypeAlias = Union[str, int, MetaProp]
+VarProp: TypeAlias = Union[str, int, MetaProp, DupCall]
 
 def prop_list_str(base: str, props: list[VarProp]) -> str:
     out = base
@@ -31,6 +34,8 @@ def prop_list_str(base: str, props: list[VarProp]) -> str:
                 out = f"len({out})"
             else:
                 assert False, "impossible"
+        elif isinstance(prop, DupCall):
+            out = f"dup({out}, {prop.size})"
         else:
             assert False, "impossible"
     return out
