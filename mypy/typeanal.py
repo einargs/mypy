@@ -413,8 +413,6 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
 
             root.refinements = RefinementInfo(local_var, constraints, options=ref_options)
 
-            print("parsed refinement type", root)
-
             return root
         elif fullname in ('typing_extensions.Required', 'typing.Required'):
             if not self.allow_required:
@@ -459,6 +457,7 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
         Will log errors if it can't find the refinement variable. Returns
         `True` if no problems.
         """
+        print("validate", name)
         # This looks up the definition of the refinement variable.
         sym = self.lookup_qualified(name, ctx)
         if sym is None or sym.node is None:
@@ -504,7 +503,7 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
             return None
 
         props = t.name.split(".")
-        name = props[0]
+        name = props[-1]
 
         if not self.validate_refinement_var(t.name, t):
             return None

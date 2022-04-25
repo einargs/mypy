@@ -139,10 +139,6 @@ class RefinementChecker:
         return sort.init(*members)
 
     def sort_for_type(self, ty: RType) -> SMTSort:
-        """Does not accept RNoneType.
-        """
-        assert not isinstance(ty, RNoneType)
-
         if isinstance(ty, RTupleType):
             if (sort := self.tuple_sorts.get(ty.size)) is not None:
                 return sort
@@ -400,7 +396,6 @@ class RefinementChecker:
             self.smt_solver.add(cond)
 
     def get_tuple_index(self, expr: SMTExpr, at: int, expr_ctx: Context) -> SMTExpr:
-        print("indexing", expr, "at", at)
         sort = expr.sort()
         if sort == self.seq_sort:
             self.constrain_index(expr, at, expr_ctx)
@@ -464,7 +459,7 @@ class RefinementChecker:
         if in_tuple_sort == self.seq_sort:
             before_start = z3.SubSeq(in_tuple, 0, start)
             after_end = z3.SubSeq(in_tuple, end, in_len - end)
-            out_tuple = z3.Concat(before_start, fold_body_smt, after_end)
+            out_tuple = z3.Concat(before_start, z3.Unit(fold_body_smt), after_end)
         else:
             assert in_tuple_sort in self.tuple_sort_sizes
             before_start = [self.get_tuple_index(in_tuple, i, expr.folded_var) for i in range(start)]
@@ -477,8 +472,6 @@ class RefinementChecker:
     def evaluate_expr(self, expr: RExpr) -> SMTExpr:
         assert expr is not None
         if isinstance(expr, (RName, RFree)):
-            if expr not in self.smt_vars:
-                print("smt_vars", self.smt_vars)
             assert expr in self.smt_vars, f"{expr} not declared"
             return self.smt_vars[expr]
         elif isinstance(expr, RIndex):
@@ -647,8 +640,6 @@ class RefinementChecker:
                     print(f"    {constraint}")
             #print("Counter example:", self.smt_solver.model())
             print()
-        else:
-            print("Given:", self.smt_solver)
 
         if result != z3.unsat:
             raise RefinementError("refinement type check failed", cond)
@@ -663,10 +654,8 @@ class RefinementChecker:
             # TODO: integrate information from the type field.
             # This will especially tricky considering that type information
             # for self inside __init__ might be incomplete?
-            print("assign", stmt.expr, "to", stmt.var)
             try:
                 smt_expr = self.evaluate_expr(stmt.expr)
-                print("evaluates to", smt_expr)
                 self.assign(stmt.var, smt_expr)
             except RefinementError as err:
                 self.havoc(stmt.var)
@@ -685,6 +674,7 @@ class RefinementChecker:
             try:
                 self.interpret_stmt(stmt)
             except RefinementError as err:
+                print("err", type(err))
                 if err.ctx.line != -1 and err.ctx.column != -1:
                     msg.fail(err.msg, err.ctx)
                     if isinstance(err, ContradictionError):

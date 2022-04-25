@@ -17,9 +17,8 @@ from mypy.types import (
 )
 from mypy.nodes import (
     Expression, Context, ComparisonExpr, Var, TypeInfo,
-    OpExpr, MemberExpr, IndexExpr,
+    OpExpr, MemberExpr, IndexExpr, RefExpr, LambdaExpr,
     NameExpr, IntExpr, TupleExpr, CallExpr, SliceExpr,
-    LambdaExpr
 )
 from mypy.messages import MessageBuilder
 
@@ -78,7 +77,6 @@ def parse_rexpr(
                 return RCmp(left, op, right).set_line(left, end_line=right.end_line)
 
             pairs = list(map(transform, expr.pairwise()))
-            print("pairwise", list(zip(expr.pairwise(), pairs)))
 
             if any(map(lambda e: e is None, pairs)):
                 return None
@@ -370,7 +368,6 @@ class RefinementBuilder:
 
         # Here we handle declaring, assigning, and adding the precondition
         # assertions for all arguments.
-        print("insert bindings", bindings)
         substs = {}
         for i, (val_expr, ty) in enumerate(bindings):
             arg_name = f"arg{i}"
@@ -386,14 +383,15 @@ class RefinementBuilder:
         # Here we declare, havoc (bc return value can be anything), and state
         # post-condition assumptions.
         if ret_type is not None:
-            ret_var: Optional[RFree] = None
+            ret_var: RFree
             if ret_type.var:
                 ret_var = self.free_var(f"ret:{ret_type.var}")
                 substs[ret_type.var] = ret_var
-                self.add(RDecl(ret_var, ret_type.base))
-                self.add(RHavoc(ret_var))
+            else:
+                ret_var = self.free_var("ret")
+            self.add(RDecl(ret_var, ret_type.base))
+            self.add(RHavoc(ret_var))
             if ret_type.cond:
-                print("substs", substs)
                 out = rexpr_substitute(ret_type.cond, substs)
                 self.add(RAssume(out))
             return ret_var
@@ -627,22 +625,22 @@ class RefinementBuilder:
             *, throw: bool = True
             ) -> Optional[Tuple[RExpr, ParsedType]]:
         assert raw_type is not None
-        ty = self.parse_type(raw_type)
-        if ty is None:
-            if throw:
+        try:
+            ty = self.parse_type(raw_type)
+            if ty is None:
                 raise RefBuildError(f"could not parse type {raw_type}", raw_expr)
+            if ty.eval_expr:
+                return ty.eval_expr, ParsedType(ty.base)
+            else:
+                expr = parse_rexpr(raw_expr, from_type=False)
+                if expr is None:
+                    raise RefBuildError("could not parse", raw_expr)
+                return expr, ty
+        except Exception as err:
+            if throw:
+                raise err
             else:
                 return None
-        if ty.eval_expr:
-            return ty.eval_expr, ParsedType(ty.base)
-        else:
-            expr = parse_rexpr(raw_expr, from_type=False)
-            if expr is None:
-                if throw:
-                    raise RefBuildError("could not parse", raw_expr)
-                else:
-                    return None
-            return expr, ty
 
     def build_assignment(
             self,
@@ -702,15 +700,69 @@ class RefinementBuilder:
         with self.log_errors():
             self.insert_return(None, ctx=ctx)
 
+    def build_index_from_call(
+            self,
+            raw_ret_type: Type,
+            raw_bindings: list[Tuple[Expression, Type, Type]],
+            ) -> Optional[RIndex]:
+        """This gets called when callable_name ends with __getitem__.
+        """
+        print("building index", len(raw_bindings))
+        if not len(raw_bindings) == 2:
+            return None
+
+        raw_base, raw_base_type, _ = raw_bindings[0]
+        raw_index, _, _ = raw_bindings[1]
+
+        if not isinstance(raw_index, IntExpr):
+            return None
+        index = raw_index.value
+
+        tup = self.parse_typed_expr(raw_base, raw_base_type, throw=False)
+        if tup is None:
+            return None
+        base, _ = tup
+
+        print("built index")
+        return RIndex(base, index)
+
+    def build_ref_expr(self, raw_expr: RefExpr, type: Type) -> Type:
+        """Basically this just adds an rexpr as an eval_expr.
+        """
+        if not isinstance(type, BaseType):
+            return type
+        rexpr = parse_rexpr(raw_expr, from_type=False)
+        if rexpr is None:
+            return type
+        if type.refinements:
+            ref_info = type.refinements.substitute(rexpr)
+        else:
+            ref_info = RefinementInfo(None, [], rexpr)
+        new_type = type.copy_with_refinements(ref_info)
+        return new_type
+
     def build_call(
             self,
             raw_ret_type: Type,
             # (expr, expr_type, expected_type)
             raw_bindings: list[Tuple[Expression, Type, Type]],
-            *, call_ctx: Context
+            *, call_ctx: Context,
+            callable_name: str,
             ) -> Optional[Type]:
-        print("raw_bindings", raw_bindings)
+
+        def package_eval_expr(e: RExpr, s: Dict[RVar, RExpr]) -> Type:
+            e.set_line(call_ctx)
+            if raw_ret_type.refinements:
+                ref_info = raw_ret_type.refinements.substitute(e, s)
+            else:
+                ref_info = RefinementInfo(None, [], e)
+            new_ret_type = raw_ret_type.copy_with_refinements(ref_info)
+            return new_ret_type
+
         with self.log_errors():
+            if callable_name.endswith("__getitem__"):
+                return None
+
             ret_type = self.parse_type(raw_ret_type)
 
             bindings: list[Tuple[RExpr, ParsedType]] = []
@@ -718,29 +770,35 @@ class RefinementBuilder:
             for raw_expr, raw_expr_type, raw_expected_type in raw_bindings:
                 expected_type = self.parse_type(raw_expected_type,
                         allow_union=True)
-                if expected_type is not None:
-                    expr, expr_type = self.parse_typed_expr(raw_expr, raw_expr_type)
+                if expected_type is None:
+                    continue
 
-                    # The expand option
-                    expand_enabled = (raw_expected_type.refinements and
-                            raw_expected_type.refinements.options['expand_var'])
-                    if isinstance(expected_type.base, RDupUnionType):
-                        assert expand_enabled, "parse_type should prevent this"
-                        size = expected_type.base.size
-                        expected_type.base = RTupleType(size)
-                        if isinstance(expr_type.base, RIntType):
-                            expr = RTupleExpr([expr] * size)
-                        else:
-                            assert (isinstance(expr_type.base, RTupleType)
-                                    and expr_type.size == size), \
-                                "type checking should prevent this"
-                    elif expand_enabled:
-                        self.fail("Expand option requires union of int and "
-                                "tuple of ints", raw_expected_type)
+                tup = self.parse_typed_expr(
+                        raw_expr, raw_expr_type, throw=False)
+                if tup is None:
+                    continue
+                expr, expr_type = tup
 
-                    bindings.append((expr, expected_type))
-                    if expected_type.var:
-                        substs[expected_type.var] = expr
+                # The expand option
+                expand_enabled = (raw_expected_type.refinements and
+                        raw_expected_type.refinements.options['expand_var'])
+                if isinstance(expected_type.base, RDupUnionType):
+                    assert expand_enabled, "parse_type should prevent this"
+                    size = expected_type.base.size
+                    expected_type.base = RTupleType(size)
+                    if isinstance(expr_type.base, RIntType):
+                        expr = RTupleExpr([expr] * size)
+                    else:
+                        assert (isinstance(expr_type.base, RTupleType)
+                                and expr_type.size == size), \
+                            "type checking should prevent this"
+                elif expand_enabled:
+                    self.fail("Expand option requires union of int and "
+                            "tuple of ints", raw_expected_type)
+
+                bindings.append((expr, expected_type))
+                if expected_type.var:
+                    substs[expected_type.var] = expr
 
             eval_expr = self.insert_call(ret_type, bindings)
 

@@ -649,3 +649,27 @@ def block0() -> Annotated[None, V]:
     c: Annotated[int, C, C > 0] = x[1]
 
 [builtins fixtures/ops.pyi]
+
+[case testRefinementInitCalls]
+from typing_extensions import Annotated
+from refinement import *
+
+class Test:
+    def __init__(self, x: int) -> None:
+        self.x = x
+
+def block0() -> Annotated[None, V]:
+    t = Test(1)
+    y: Annotated[int, Y, Y > 0] = 5
+[builtins fixtures/ops.pyi]
+
+[case testRefinementIndexCallExpr]
+from typing import Tuple
+from typing_extensions import Annotated
+from refinement import *
+
+def f0() -> Annotated[Tuple[int, int], V, V == (6,6)]:
+    return (6,6)
+
+a: Annotated[int, A, A > 5] = f0()[1]
+[builtins fixtures/ops.pyi]

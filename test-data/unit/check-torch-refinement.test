@@ -179,7 +179,7 @@ def block0(t: Annotated[Tensor, T, T.shape == (64, 64, 12, 12)]) -> None:
     s: Annotated[Tensor, S, S.shape == (64, 9216)] = torch.flatten(t, start=1, end=4)
 
 class Net(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self) -> Annotated[None, V]:
         super(Net, self).__init__()
         self.conv1 = nn.Conv2d(1, 32, (3,3), (1,1), (0,0), (1,1))
         self.conv2 = nn.Conv2d(32, 64, (3,3), (1,1), (0,0), (1,1))

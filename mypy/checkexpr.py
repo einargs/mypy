@@ -263,7 +263,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             # generating extra type errors.
             result = AnyType(TypeOfAny.from_error)
         assert result is not None
-        return result
+        return self.chk.ref_builder.build_ref_expr(e, result)
 
     def analyze_var_ref(self, var: Var, context: Context) -> Type:
         if var.type:
@@ -1059,10 +1059,16 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         # This needs to happen before we check argument types because otherwise
         # information about self won't be loaded in for later arguments to use.
         self_expr: Optional[Expression] = None
-        if callable_name is not None and callable_name.endswith("__call__"):
+        if callable_name is not None and any(
+                callable_name.endswith(n)
+                for n in ("__call__",)):
             self_expr = callable_node
+            # Note that callable_node isn't always present; I found this out
+            # when dealing with __getitem__.
         elif (isinstance(callable_node, MemberExpr)
-                and len(callee.bound_args) > 0 and len(callee.erased_args) > 0):
+                and len(callee.bound_args) > 0 and len(callee.erased_args) > 0
+                # The below would make it an init call
+                and not callee.is_type_obj()):
             self_expr = callable_node.expr
 
         # I think I can move this down
@@ -1109,7 +1115,8 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
         # This checks the argument types.
         ret_type_with_eval = self.chk.ref_builder.build_call(
-                callee.ret_type, ref_call_bindings, call_ctx=context)
+                callee.ret_type, ref_call_bindings,
+                call_ctx=context, callable_name=callable_name)
 
         # Here we perform substitution for the return type.
         if ret_type_with_eval is not None:
@@ -3016,7 +3023,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 if result.refinements is None:
                     result.refinements = RefinementInfo(None, [])
                 result.refinements.eval_expr = RIndex(
-                        base_expr, e.index.value)
+                        base_expr, e.index.value).set_line(e)
         return result
 
     def visit_index_expr_helper(self, e: IndexExpr) -> Type:
