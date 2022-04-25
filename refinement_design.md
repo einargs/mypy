@@ -13,6 +13,61 @@ all broken.
 pytest -n0 -k "check-refinement.test"
 ```
 
+# Rewrite
+## Properties a.k.a. storing info in types
+Okay, so the current plan for dealing with inferring conditions from class
+properties is that when we convert a BaseType to a ParsedType we go through all
+children and accumulate their conditions into the parent. For this I would want
+to do type-level substitution of terms.
+
+Further, we'll have a `verification_var` style thing on BaseTypes, which we'll
+prefer over parsing an expression. In the expression checker we'll build on
+this, extending the variable with the corresponding thing. I can even write a
+utility method that takes the type and the expression and only parses the
+expression into an RExpr if the type doesn't list a variable. But I'll only
+access that variable in specific cases? And maybe using it deletes the thing so
+it doesn't stick around. I like that.
+
+Having a `verification_var` style variable inside the type is - well, not ideal,
+but it'll work? I mean, hm. In a way, the type checker is the one doing all of
+the evaluation and substitution of the refinement types. The only real hiccup is
+that it causes some weird scope issues. So substitution + a variable only used
+to retrieve the results of immediate type checking.
+
+TODO: Actually, maybe I can avoid this? I only need a way to get the type
+information for a function call. So if I have a `call_handler` that gets access
+to the expression checker, I can maybe duplicate some of the argument logic (or
+extract it into something separate). Hmm. Actually, nevermind -- there's a bunch
+of annoying logic, like the stuff for callables. Better to properly integrate.
+I could maybe do something like a weak ref map inside the RefinementBuilder to
+avoid directly having the `verification_var`s stored in the types? Nah, extra
+useless complexity.
+
+## Dealing with Dup
+What I'll do is I'll have a marker on a type -- probably something exactly like
+`Annotated[Union[...], expand(A)]`. Maybe something like `Annotated[Union[...],
+A, Expand]`. That will set a flag in ParsedType where the type will just be
+`RTupleType(size)`. Then inside `build_call` I'll see if the `raw_expr_type` is
+an int, in which case I'll generate a fresh tuple expression duplicating the
+variable.
+
+Definitely still need a marker of some kind. Not sure what kind though.
+
+## Specialize annotation handling
+I need to stop parsing the variable name from an unbound type and start directly
+intercepting `Annotated` markers during parsing, then doing my own custom
+parsing from there.
+
+### Old thoughts
+Alternatively, I could during `__init__` find all assumptions involving `self`
+and load them as parents? Actually hmm -- maybe I should do that during the
+conversion from a BaseType to a ParsedType instead.
+
+Okay, so `TypeInfo` is basically a type constructor. What if I store all of the
+post conditions in there? No, I think that the substitution is the best way to
+do this. Hmm. `TypeInfo` is built during semantic analysis which I think makes
+  that even more impractical.
+
 # Refinement Design
 Dealing with aliasing is a problem here. Possibly in the future I could do a
 rust-style ownership thing that prevents aliasing problems.
@@ -67,6 +122,13 @@ def is_cat(
 IsCat(V))]:
     ...
 ```
+
+## Unsat Core
+It looks like I can use the `unsat_core` and `assert_and_track` to basically get
+indicators for when an added condition is unsatisfiable. That will help with
+error messages. I'll be able to individually say "this statement is the one that
+failed." Though maybe that won't work with the unsat technique? Frustrating. I
+think I need to find a way to sit inside forall statements or something.
 
 ## Design Work
 I really need to sit down and do some design work for a redesign from the bottom

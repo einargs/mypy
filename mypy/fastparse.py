@@ -39,9 +39,6 @@ from mypy.patterns import (
 from mypy.types import (
     Type, CallableType, AnyType, UnboundType, TupleType, TypeList, EllipsisType, CallableArgument,
     TypeOfAny, Instance, RawExpressionType, ProperType, UnionType, ConstraintSynType,
-    RefinementVar, RefinementLiteral, RefinementConstraint, RefinementTuple,
-    RefinementExpr, ConstraintKind, RefinementBinOpKind, RefinementBinOp,
-    RefinementSelf, RefinementConst, RefinementFold,
 )
 from mypy import defaults
 from mypy import message_registry, errorcodes as codes
@@ -50,6 +47,7 @@ from mypy.options import Options
 from mypy.reachability import mark_block_unreachable
 from mypy.util import bytes_to_human_readable_repr
 from mypy.var_prop import MetaProp, DupCall
+from mypy.refinement_builder import parse_rexpr
 
 try:
     # pull this into a final variable to make mypyc be quiet about the
@@ -1389,151 +1387,6 @@ class ASTConverter:
         return self.set_line(node, n)
 
 
-def convert_refinement_expr(node: AST) -> Optional[RefinementExpr]:
-    """Converts an ast node inside a refinement constraint into the correct
-    format.
-
-    In something like `V.shape == (A,B)`, this converts `V.shape` and `(A,B)`.
-    """
-    def convert_sub_expr(node: AST) -> Optional[RefinementExpr]:
-        if isinstance(node, ast3.Constant) and isinstance(node.value, int):
-            return RefinementLiteral(node.value,
-                    line=node.lineno, column=node.col_offset)
-
-        elif isinstance(node, ast3.BinOp):
-            if isinstance(node.op, ast3.Add):
-                kind = RefinementBinOpKind.add
-            elif isinstance(node.op, ast3.Sub):
-                kind = RefinementBinOpKind.sub
-            elif isinstance(node.op, ast3.Mult):
-                kind = RefinementBinOpKind.mult
-            elif isinstance(node.op, ast3.FloorDiv):
-                kind = RefinementBinOpKind.floor_div
-            else:
-                return None
-            left = convert_sub_expr(node.left)
-            right = convert_sub_expr(node.right)
-            if left and right:
-                return RefinementBinOp(left, kind, right,
-                        line=node.lineno, column=node.col_offset)
-            else:
-                return None
-
-        elif (isinstance(node, ast3.Call)
-                and isinstance(node.func, ast3.Name)):
-            if node.func.id == "len" and len(node.args) == 1:
-                value = convert_sub_expr(node.args[0])
-                if isinstance(value, (RefinementVar, RefinementSelf)):
-                    value.props.append(MetaProp.len)
-                    # As a call this changes the start position
-                    value.line = node.lineno
-                    value.column = node.col_offset
-                    return value
-            elif (node.func.id == "dup"
-                    and len(node.args) == 2
-                    and isinstance(node.args[1], ast3.Constant)
-                    and isinstance(node.args[1].value, int)):
-                value = convert_sub_expr(node.args[0])
-                if isinstance(value, (RefinementVar, RefinementSelf)):
-                    value.props.append(DupCall(node.args[1].value))
-                    # As a call this changes the start position
-                    value.line = node.lineno
-                    value.column = node.col_offset
-                    print("value", value)
-                    return value
-
-        elif isinstance(node, ast3.Attribute):
-            value = convert_sub_expr(node.value)
-            if isinstance(value, (RefinementVar, RefinementSelf)):
-                value.props.append(node.attr)
-                return value
-            else:
-                return None
-
-        elif (isinstance(node, ast3.Subscript)
-                and isinstance(node.slice, ast3.Constant)
-                and isinstance(node.slice.value, int)):
-            value = convert_sub_expr(node.value)
-            if isinstance(value, (RefinementVar, RefinementSelf)):
-                value.props.append(node.slice.value)
-                return value
-            else:
-                return None
-
-        elif isinstance(node, ast3.Name):
-            if node.id == "RSelf":
-                return RefinementSelf(line=node.lineno, column=node.col_offset)
-            else:
-                return RefinementVar(node.id,
-                        line=node.lineno, column=node.col_offset)
-
-        return None
-
-    if isinstance(node, ast3.Tuple):
-        values = []
-        for e in node.elts:
-            v = convert_sub_expr(e)
-            if v is None:
-                return None
-            else:
-                values.append(v)
-        return RefinementTuple(values, line=node.lineno, column=node.col_offset)
-    if (isinstance(node, ast3.Call)
-            and isinstance(node.func, ast3.Name)
-            and node.func.id == "fold"):
-        if len(node.args) != 2:
-            return None
-
-        fold_lambda = node.args[0]
-        if not (isinstance(fold_lambda, ast3.Lambda)
-                and len(fold_lambda.args.args) == 2):
-            return None
-
-        fold_args = fold_lambda.args.args
-        acc_var = fold_args[0].arg
-        cur_var = fold_args[1].arg
-        fold_expr = convert_sub_expr(fold_lambda.body)
-
-        if fold_expr is None:
-            return None
-
-        subscript = node.args[1]
-        if not (isinstance(subscript, ast3.Subscript)
-                and isinstance(subscript.slice, ast3.Slice)
-                and subscript.slice.step is None):
-            return None
-
-        folded_var = convert_sub_expr(subscript.value)
-        if not isinstance(folded_var, (RefinementVar, RefinementSelf)):
-            return None
-
-        if subscript.slice.lower is None:
-            start = None
-        else:
-            start = convert_sub_expr(subscript.slice.lower)
-            if start is None:
-                return None
-
-        if subscript.slice.upper is None:
-            end = None
-        else:
-            end = convert_sub_expr(subscript.slice.upper)
-            if end is None:
-                return None
-
-        return RefinementFold(
-                acc_var,
-                cur_var,
-                fold_expr,
-                folded_var,
-                start,
-                end,
-                line=node.lineno,
-                column=node.col_offset)
-    else:
-        return convert_sub_expr(node)
-
-
 class TypeConverter:
     def __init__(self,
                  errors: Optional[Errors],
@@ -1701,35 +1554,53 @@ class TypeConverter:
                          uses_pep604_syntax=True)
 
     def visit_Compare(self, n: ast3.Compare) -> Type:
-        if len(n.ops) != 1:
+        parent = self.parent()
+
+        if parent is None:
             return self.invalid_type(n)
 
-        kind: ConstraintKind
-        if isinstance(n.ops[0], ast3.Eq):
-            kind = ConstraintKind.EQ
-        elif isinstance(n.ops[0], ast3.NotEq):
-            kind = ConstraintKind.NOT_EQ
-        elif isinstance(n.ops[0], ast3.Lt):
-            kind = ConstraintKind.LT
-        elif isinstance(n.ops[0], ast3.LtE):
-            kind = ConstraintKind.LT_EQ
-        elif isinstance(n.ops[0], ast3.Gt):
-            kind = ConstraintKind.GT
-        elif isinstance(n.ops[0], ast3.GtE):
-            kind = ConstraintKind.GT_EQ
+        if not (isinstance(parent, ast3.Subscript)
+                and isinstance(parent.value, ast3.Name)
+                and parent.value.id == "Annotated"):
+            return self.invalid_type(n)
+
+        assert self.errors is not None
+        expr_parser = ASTConverter(Options(), False, self.errors)
+        expr = expr_parser.visit(n)
+        rexpr = parse_rexpr(expr, from_type=True)
+
+        if rexpr is None:
+            self.fail("malformed refinement expression", self.line, n.col_offset)
+            return self.invalid_type(n)
         else:
-            return self.invalid_type(n)
+            return ConstraintSynType(rexpr)
 
-        assert len(n.comparators) == 1
-        left = convert_refinement_expr(n.left)
-        right = convert_refinement_expr(n.comparators[0])
-        if left is None or right is None:
-            return self.invalid_type(n)
-        return ConstraintSynType(
-                RefinementConstraint(left, kind, right,
-                    line=self.line, column=n.col_offset),
-                line=self.line,
-                column=n.col_offset)
+        # kind: ConstraintKind
+        # if isinstance(n.ops[0], ast3.Eq):
+        #     kind = ConstraintKind.EQ
+        # elif isinstance(n.ops[0], ast3.NotEq):
+        #     kind = ConstraintKind.NOT_EQ
+        # elif isinstance(n.ops[0], ast3.Lt):
+        #     kind = ConstraintKind.LT
+        # elif isinstance(n.ops[0], ast3.LtE):
+        #     kind = ConstraintKind.LT_EQ
+        # elif isinstance(n.ops[0], ast3.Gt):
+        #     kind = ConstraintKind.GT
+        # elif isinstance(n.ops[0], ast3.GtE):
+        #     kind = ConstraintKind.GT_EQ
+        # else:
+        #     return self.invalid_type(n)
+
+        # assert len(n.comparators) == 1
+        # left = convert_refinement_expr(n.left)
+        # right = convert_refinement_expr(n.comparators[0])
+        # if left is None or right is None:
+        #     return self.invalid_type(n)
+        # return ConstraintSynType(
+        #         RefinementConstraint(left, kind, right,
+        #             line=self.line, column=n.col_offset),
+        #         line=self.line,
+        #         column=n.col_offset)
 
     def visit_NameConstant(self, n: NameConstant) -> Type:
         if isinstance(n.value, bool):

@@ -20,6 +20,7 @@ from mypy.nodes import (
     FuncBase, FuncItem, FuncDef, OverloadedFuncDef, TypeInfo, ARG_STAR, ARG_STAR2, ARG_POS,
     Expression, StrExpr, Var, Decorator, SYMBOL_FUNCBASE_TYPES
 )
+from mypy.refinement_ast import RName
 from mypy.maptype import map_instance_to_supertype
 from mypy.expandtype import expand_type_by_instance, expand_type
 
@@ -120,6 +121,9 @@ def class_callable(init_type: CallableType, info: TypeInfo, type_type: Instance,
         # refinement variables and translate RSelf to those, but instead we'll
         # be hacky.
         ret_type.refinements = init_ret_type.refinements
+        # We insert a self variable because this is an init
+        if ret_type.refinements.var is None:
+            ret_type.refinements.var = RName("self")
     callable_type = init_type.copy_modified(
         ret_type=ret_type, fallback=type_type, name=None, variables=variables,
         special_sig=special_sig)

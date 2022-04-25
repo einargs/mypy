@@ -20,9 +20,9 @@ reveal_type(b)  # N: Revealed type is "builtins.int{A: A > 5}"
 from typing_extensions import Annotated
 from refinement import *
 a: Annotated[int, V, V > 5] = 9
-b: Annotated[int, V, V > 5] = 9  # E: Tried to bind already bound refinement variable "V"
+b: Annotated[int, V, V > 5] = 9
 
-def f0(a: Annotated[int, V, V > 5], b: Annotated[int, V, V < 8]) -> None:  # E: Tried to bind already bound refinement variable "V"
+def f0(a: Annotated[int, V, V > 5], b: Annotated[int, V, V < 8]) -> None:
     return None
 
 # I think this should be fine
@@ -89,6 +89,7 @@ def f1(
 [builtins fixtures/tuple.pyi]
 
 [case testRefinementComplexAssignment]
+# Somewhat deprecated until I decide how exactly I want to do invalidation.
 from typing import Tuple
 from typing_extensions import Annotated
 from refinement import *
@@ -101,42 +102,13 @@ def f0(
     a: Annotated[int, B, B > 3] = v.shape[1]
     b = a
 
-    c: Annotated[int, C, C > 4] = v.shape[1]  # E: refinement type check failed
-    d: Annotated[int, X, X > 1] = a  # E: refinement type check failed
+    c: Annotated[int, C, C > 4] = v.shape[1]  # maybe invalidated?
+    d: Annotated[int, X, X > 1] = a  # maybe invalidated?
     e = d
     # f type checks even though d doesn't, because the errors are isolated.
     f: Annotated[int, Y, Y > 0] = e
 
     return v.shape[0]
-[builtins fixtures/tuple.pyi]
-
-[case testRefinementFloatingVars]
-from typing import Tuple
-from typing_extensions import Annotated
-from refinement import *
-
-class array:
-    shape: Tuple[int, ...]
-
-L = RefinementVar('L')
-M = RefinementVar('M')
-N = RefinementVar('N')
-
-def g0(
-        m: Annotated[array, A, A.shape == (X, Y)]
-) -> Annotated[int, V, V == Y]:
-    tup: Annotated[Tuple[int, ...], L, L == (X, Y)] = m.shape
-    return tup[1]
-
-def f0(
-        m1: Annotated[array, A, A.shape == (X, Y)],
-        m2: Annotated[array, B, B.shape == (Y, Z)],
-        m3: Annotated[array, C, C.shape == (X, Z)]
-) -> Annotated[int, V, V == Y]:
-    tup: Annotated[Tuple[int, ...], L, L == (X, Z)] = m3.shape
-    m: Annotated[int, M, M == Y] = m1.shape[1]
-    n: Annotated[int, N, N == Z] = tup[1]
-    return m2.shape[0]
 [builtins fixtures/tuple.pyi]
 
 [case testRefinementCalls]
@@ -170,12 +142,13 @@ def test_call_args(m: Annotated[int, V, V > 9]) -> Annotated[int, A, A > 0]:
     a: Annotated[int, B, B > 3] = f0(f1(over10()))
     b: Annotated[int, C, C > 3] = f2(m, other)
     # TODO: give specific type error in regards to `m` being invalid maybe?
-    c: Annotated[int, X, X > 3] = m  # E: refinement type check failed
+    c: Annotated[int, X, X > 3] = m  # maybe invalid in future?
     return a
 
 [builtins fixtures/tuple.pyi]
 
 [case testRefinementVarInvalidation]
+# Deprecated until I re-implement invalidation
 from typing_extensions import Annotated
 from refinement import *
 
@@ -193,21 +166,22 @@ def f3(a: Annotated[int, A, A > 3]) -> None:
 
 a: Annotated[int, A, A > 1] = 2
 f0(a)
-b: Annotated[int, B, B > 0] = a  # E: refinement type check failed
+b: Annotated[int, B, B > 0] = a  # maybe invalid?
 
 def b0(a0: Annotated[int, A, A > 10]) -> None:
     a1 = a0
-    f3(a0)  # E: refinement type check failed
+    f3(a0)  # maybe invalid?
     f3(a1)
     x: Annotated[int, X, X > 3] = 7
     y: Annotated[int, Y, Y > 3] = f1(x)
     # This works because no type info from x is needed
     z: Annotated[int, Z, Z > 2] = f1(x)
-    v: Annotated[int, V, V > 2] = x  # E: refinement type check failed
-    c: Annotated[int, C, C > 1] = f2(x)  # E: refinement type check failed
+    v: Annotated[int, V, V > 2] = x  # maybe invalid?
+    c: Annotated[int, C, C > 1] = f2(x)  # maybe invalid?
 [builtins fixtures/tuple.pyi]
 
 [case testRefinementRevealDoesNotInvalidate]
+# Deprecated until I re-implement invalidation
 from typing_extensions import Annotated
 from refinement import *
 
@@ -221,19 +195,19 @@ a: Annotated[int, A, A > 10] = 11
 reveal_type(a)  # N: Revealed type is "builtins.int{A: A > 10}"
 b: Annotated[int, B, B > 8] = a
 reveal_type(a)  # N: Revealed type is "builtins.int{A: A > 10}"
-c: Annotated[int, C, 5 < C] = a  # E: refinement type check failed
+c: Annotated[int, C, 5 < C] = a  # maybe invalid?
 
 
 x: Annotated[int, X, 3 < X] = 5
 reveal_type(x)  # N: Revealed type is "builtins.int{X: 3 < X}"
 y = x
-f0(x)  # E: refinement type check failed
+f0(x)  # maybe invalid?
 f1(y)
 reveal_type(y)  # N: Revealed type is "builtins.int{X: 3 < X}"
 # TODO: Ideally we would catch the fact that x is invalid here, instead of when
 # we use z.
 z = f1(x)
-f0(z)  # E: refinement type check failed
+f0(z)  # maybe invalid?
 [builtins fixtures/tuple.pyi]
 
 [case testRefinementExprStmt]
@@ -347,7 +321,7 @@ a: Annotated[int, A, A > 1+2] = 5
 b: Annotated[int, B, B > 3+3] = f0(4,6)
 c: Annotated[int, Y, Y > 1+3] = 4  # E: refinement type check failed
 x0 = f0(5,5)
-reveal_type(x0)  # N: Revealed type is "builtins.int{C: C > 5 + 5}"
+reveal_type(x0)  # N: Revealed type is "builtins.int{C: C > (5 + 5)}"
 x1 = f0(5,5)
 x2: Annotated[int, X, X > 4] = x1
 [builtins fixtures/tuple.pyi]
@@ -368,7 +342,7 @@ def f0(
 ) -> Annotated[int, C, C > A+B]:
     return a + b + 1
 
-def block0() -> None:
+def block0() -> Annotated[None, V]:
     a: Annotated[int, A, A > 1+2] = 4+4
     b: Annotated[int, B, B > 3+A] = f0(4,6) + a
     c: Annotated[int, C, C > 1+3] = 4  # E: refinement type check failed
@@ -476,6 +450,9 @@ class Test0:
         # implemented.
         return self.c * a * self.prop.x
 
+    def getProp(self: Annotated['Test0', SELF]) -> Annotated[int, V, V == SELF.prop.x]:
+        return self.prop.x
+
     def useProp(self: Annotated['Test0', SELF]) -> Annotated[int, V, V == 2]:
         inferred = self.prop
         otherProp: Annotated['Prop0', X, X.x == 2] = inferred
@@ -484,8 +461,13 @@ class Test0:
     def __call__(self: Annotated['Test0', SELF]) -> Annotated[int, V, V == SELF.c * 2]:
         return self.c * 2
 
-def block0() -> Annotated[int, X]:
+def block0() -> Annotated[int, V]:
     test = Test0(2)
+    x: Annotated[Prop0, X, X.x == 2] = test.prop
+    b: Annotated[int, B, B == 2] = x.x
+    y: Annotated[int, Y, Y == 2] = test.prop.x
+    z: Annotated[int, Z, Z == 2] = test.getProp()
+    #reveal_type(test.prop)
     a: Annotated[int, A, A == 8] = test.useX(2)
 
     return 0
@@ -524,42 +506,42 @@ test.deps(1)
 test.deps(2) # E: refinement type check failed
 [builtins fixtures/primitives.pyi]
 
-[case testRefinementConst]
-from typing_extensions import Annotated
-from refinement import *
-
-def f0(x: Annotated[int, X, X > 3]) -> None:
-    y = x
-    z: Annotated[int, Z, Z > 2] = x # E: refinement type check failed
-
-def f1() -> None:
-    x: Annotated[int, X, Const, X > 3] = 5
-    y = x
-    z: Annotated[int, Z, Z > 2] = x
-
-def f2(x: Annotated[int, X, Const, X > 3]) -> None:
-    y = x
-    z: Annotated[int, Z, Z > 1] = 2
-    y = z
-
-def f3() -> None:
-    x: Annotated[int, X, Const, X > 3] = 4
-    # TODO: currently even this will be overwritten. In the future I might want
-    # this to work.
-    z: Annotated[int, Z, Z > 6] = 8
-    x = z
-    x = 2 # TODO: refinement type check failed
-
-def f4(input: Annotated[int, V, V > 3]) -> None:
-    x: Annotated[int, X, X == 1] = 1
-    y: Annotated[int, Y, Y == 2] = 2
-    z: Annotated[int, Z, Z == 3] = 3
-
-    a = x
-    a = y
-    a = z
-    b: Annotated[int, B, B == 3] = a
-[builtins fixtures/primitives.pyi]
+# [case testRefinementConst]
+# from typing_extensions import Annotated
+# from refinement import *
+# 
+# def f0(x: Annotated[int, X, X > 3]) -> None:
+#     y = x
+#     z: Annotated[int, Z, Z > 2] = x # E: refinement type check failed
+# 
+# def f1() -> None:
+#     x: Annotated[int, X, Const, X > 3] = 5
+#     y = x
+#     z: Annotated[int, Z, Z > 2] = x
+# 
+# def f2(x: Annotated[int, X, Const, X > 3]) -> None:
+#     y = x
+#     z: Annotated[int, Z, Z > 1] = 2
+#     y = z
+# 
+# def f3() -> None:
+#     x: Annotated[int, X, Const, X > 3] = 4
+#     # TODO: currently even this will be overwritten. In the future I might want
+#     # this to work.
+#     z: Annotated[int, Z, Z > 6] = 8
+#     x = z
+#     x = 2 # TODO: refinement type check failed
+# 
+# def f4(input: Annotated[int, V, V > 3]) -> None:
+#     x: Annotated[int, X, X == 1] = 1
+#     y: Annotated[int, Y, Y == 2] = 2
+#     z: Annotated[int, Z, Z == 3] = 3
+# 
+#     a = x
+#     a = y
+#     a = z
+#     b: Annotated[int, B, B == 3] = a
+# [builtins fixtures/primitives.pyi]
 
 [case testRefinementReUse]
 from typing_extensions import Annotated
@@ -603,24 +585,15 @@ def f1(
     a: Annotated[Tuple[int, int], A]
 ) -> Annotated[Tuple[int, int], V, A == V]: ...
 
-def f2(
-    a: Annotated[Tuple[int, ...], A]
-) -> Annotated[Tuple[int, ...], V, A == V]:
-    return a
-
-def f3(
-    a: Annotated[Tuple[int, ...], A]
-) -> Annotated[Tuple[int, ...], V, A == V]: ...
-
 def block0() -> Annotated[None, V]:
     x: Annotated[Tuple[int, int], X, X == (1,2)] = f0((1,2))
     y: Annotated[Tuple[int, int], Y, Y == (3,1)] = f1((3,1))
-    z: Annotated[Tuple[int, ...], Z, Z == (3,1)] = f2(f0(y))
+    z: Annotated[Tuple[int, ...], Z, Z == (3,1)] = f0(y)
 
 def block1() -> Annotated[None, V]:
-    x: Annotated[Tuple[int, ...], X, X == (1,2)] = f2((1,2))
-    y: Annotated[Tuple[int, ...], Y, Y == (3,1)] = f3((3,1))
-    z: Annotated[Tuple[int, ...], Z, Z == (3,1)] = f2(f3(y))
+    x: Annotated[Tuple[int, ...], X, X == (1,2)] = (1,2)
+    y: Annotated[Tuple[int, ...], Y, Y == (3,1)] = (3,1)
+    z: Annotated[Tuple[int, ...], Z, Z == (3,1)] = y
 
 # TODO: tests for when the tuple is a property.
 [builtins fixtures/primitives.pyi]
@@ -652,7 +625,7 @@ class Thing:
     tup: Tuple[int, ...]
 
 def block0(a: Annotated[Thing, A, len(A.tup) == 2]) -> Annotated[None, V]:
-    x: Annotated[int, X, X == A.tup[2]] = a.tup[2] # E: out of bounds index a.tup[2] (length 2)
+    x: Annotated[int, X, X == A.tup[2]] = a.tup[2] # E: index (2) out of bounds
 [builtins fixtures/ops.pyi]
 
 [case testRefinementDupTuple]
@@ -661,12 +634,12 @@ from typing_extensions import Annotated
 from refinement import *
 
 def f0(
-    a: Annotated[Union[int, Tuple[int, int]], A]
-) -> Annotated[Tuple[int, int], V, V == dup(A, 2)]: ...
+    a: Annotated[Union[int, Tuple[int, int]], A[Expand]]
+) -> Annotated[Tuple[int, int], V, V == A]: ...
 
 def f1(
-    a: Annotated[Union[int, Tuple[int, int, int]], A]
-) -> Annotated[Tuple[int, int, int], V, V == dup(A, 3)]: ...
+    a: Annotated[Union[int, Tuple[int, int, int]], A[Expand]]
+) -> Annotated[Tuple[int, int, int], V, V == A]: ...
 
 def block0() -> Annotated[None, V]:
     a: Annotated[Tuple[int, int], A, A == (2, 2)] = f0(2)

@@ -19,9 +19,7 @@ from mypy.types import (
     PlaceholderType, Overloaded, get_proper_type, TypeAliasType, RequiredType,
     TypeVarLikeType, ParamSpecType, ParamSpecFlavor, callable_with_ellipsis,
     TYPE_ALIAS_NAMES, FINAL_TYPE_NAMES, LITERAL_TYPE_NAMES, ANNOTATED_TYPE_NAMES,
-    RefinementVar, RefinementConstraint, RefinementInfo, BaseType, ConstraintSynType,
-    RefinementSelf, RefinementExpr, RefinementLiteral, RefinementBinOp,
-    RefinementTuple, RefinementConst, RefinementFold,
+    RefinementInfo, ConstraintSynType, BaseType, RefinementOptions,
 )
 
 from mypy.nodes import (
@@ -30,6 +28,9 @@ from mypy.nodes import (
     ARG_OPT, ARG_NAMED_OPT, ARG_STAR, ARG_STAR2, TypeVarExpr, TypeVarLikeExpr, ParamSpecExpr,
     TypeAlias, PlaceholderNode, SYMBOL_FUNCBASE_TYPES, Decorator, MypyFile,
     RefinementVarExpr,
+)
+from mypy.refinement_ast import (
+    RExpr, RName,
 )
 from mypy.typetraverser import TypeTraverserVisitor
 from mypy.tvar_scope import TypeVarLikeScope
@@ -362,12 +363,16 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                           " and at least one annotation", t)
                 return AnyType(TypeOfAny.from_error)
 
+
             # Here we deal with constraint stuff. For now we're going to assume
             # that all Annotated are refinement types. This will probably change
             # later, but for now it's convenient.
 
             # we use this to convert all unbound names to refinement variables.
             root = self.anal_type(t.args[0])
+
+            # TODO: get full verification of all refinement variables up
+            # and running.
 
             if not isinstance(root, BaseType):
                 self.fail("Only BaseTypes can have refinement annotations",
@@ -378,41 +383,37 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                 self.fail("Cannot refine an already refined type (for now)",
                         root)
                 return AnyType(TypeOfAny.from_error)
-
+            
             if isinstance(t.args[1], UnboundType):
-                local_var = self.convert_type_to_refinement_var(t.args[1])
-                if local_var is None:
-                    self.fail("All Annotated refinement types need a variable as the"
-                            " second argument", t)
+                tup = self.convert_type_to_refinement_var(t.args[1])
+                if tup is None:
+                    self.fail("expected refinement variable", t)
                     return AnyType(TypeOfAny.from_error)
-                if len(local_var.props) != 0:
-                    self.fail("When declaring a refinement variable for a type, "
-                            "it cannot have member accesses", t)
-                    return AnyType(TypeOfAny.from_error)
+                local_var, ref_options = tup
                 con_args = t.args[2:]
             else:
                 local_var = None
+                ref_options = RefinementOptions.default()
                 con_args = t.args[1:]
 
-            is_const = False
-            constraints: list[RefinementConstraint] = []
+            # is_const = False
+            constraints: list[RExpr] = []
             for c in con_args:
-                if self.is_refinement_const(c):
-                    if is_const:
-                        self.fail("Multiple Const in one refinement type", c)
-                    is_const = True
-                elif isinstance(c, ConstraintSynType):
-                    if not self.verify_refinement_vars_in_constraint(c.value):
-                        return AnyType(TypeOfAny.from_error)
+                # if self.is_refinement_const(c):
+                #     if is_const:
+                #         self.fail("Multiple Const in one refinement type", c)
+                #     is_const = True
+                if isinstance(c, ConstraintSynType):
+                    # if not self.verify_refinement_vars_in_constraint(c.value):
+                    #     return AnyType(TypeOfAny.from_error)
                     constraints.append(c.value)
                 else:
-                    print("c", c)
-                    self.fail("All Annotated refinement types accept only "
-                            "constraints after the type and optional "
-                            "refinement variable.", c)
+                    self.fail("expected refinement constraint", c)
                     return AnyType(TypeOfAny.from_error)
 
-            root.refinements = RefinementInfo(local_var, constraints, is_const)
+            root.refinements = RefinementInfo(local_var, constraints, options=ref_options)
+
+            print("parsed refinement type", root)
 
             return root
         elif fullname in ('typing_extensions.Required', 'typing.Required'):
@@ -436,22 +437,22 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
             return self.named_type('builtins.bool')
         return None
 
-    def is_refinement_self_valid(self, ctx: Context) -> bool:
-        """Check if RSelf is currently imported.
-        """
-        sym = self.lookup_qualified("RSelf", ctx)
-        return sym and sym.node and sym.node.fullname == "refinement.RSelf"
+    # def is_refinement_self_valid(self, ctx: Context) -> bool:
+    #     """Check if RSelf is currently imported.
+    #     """
+    #     sym = self.lookup_qualified("RSelf", ctx)
+    #     return sym and sym.node and sym.node.fullname == "refinement.RSelf"
 
-    def is_refinement_const(self, typ: Type) -> bool:
-        """Check if the unbound type is a reference to refinement const.
-        """
-        if not isinstance(typ, UnboundType) or typ.name != "Const":
-            return False
+    # def is_refinement_const(self, typ: Type) -> bool:
+    #     """Check if the unbound type is a reference to refinement const.
+    #     """
+    #     if not isinstance(typ, UnboundType) or typ.name != "Const":
+    #         return False
 
-        sym = self.lookup_qualified("Const", typ)
-        return sym and sym.node and sym.node.fullname == "refinement.Const"
+    #     sym = self.lookup_qualified("Const", typ)
+    #     return sym and sym.node and sym.node.fullname == "refinement.Const"
 
-    def validate_refinement_var(self, var: RefinementVar) -> bool:
+    def validate_refinement_var(self, name: str, ctx: Context) -> bool:
         """Verify that a refinement variable was actually declared as a
         refinement variable.
 
@@ -459,7 +460,7 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
         `True` if no problems.
         """
         # This looks up the definition of the refinement variable.
-        sym = self.lookup_qualified(var.name, var)
+        sym = self.lookup_qualified(name, ctx)
         if sym is None or sym.node is None:
             # It seems lookup_qualified will throw it's own error.
             # self.fail("Couldn't find symbol related to refinement variable", t)
@@ -471,45 +472,54 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
 
         return True
 
-    def verify_refinement_vars_in_constraint(self, c: RefinementConstraint) -> bool:
-        """Returns true if everything is okay, and returns false if an error
-        message was logged.
-        """
-        
-        def verify_sub_expr(e: RefinementExpr) -> bool:
-            """Returns a new expression if it changed and whether it is valid.
-            """
-            if isinstance(e, RefinementSelf):
-                return self.is_refinement_self_valid(e)
-            elif isinstance(e, RefinementVar):
-                return self.validate_refinement_var(e)
-            elif isinstance(e, RefinementTuple):
-                return all(verify_sub_expr(item) for item in e.items)
-            elif isinstance(e, RefinementBinOp):
-                return verify_sub_expr(e.left) and verify_sub_expr(e.right)
-            elif isinstance(e, RefinementLiteral):
-                return True
-            elif isinstance(e, RefinementFold):
-                return verify_sub_expr(e.folded_var)
-            else:
-                assert False, "No other cases"
+    # def verify_refinement_vars_in_constraint(self, c: RefinementConstraint) -> bool:
+    #     """Returns true if everything is okay, and returns false if an error
+    #     message was logged.
+    #     """
+    #     
+    #     def verify_sub_expr(e: RefinementExpr) -> bool:
+    #         """Returns a new expression if it changed and whether it is valid.
+    #         """
+    #         if isinstance(e, RefinementSelf):
+    #             return self.is_refinement_self_valid(e)
+    #         elif isinstance(e, RefinementVar):
+    #             return self.validate_refinement_var(e)
+    #         elif isinstance(e, RefinementTuple):
+    #             return all(verify_sub_expr(item) for item in e.items)
+    #         elif isinstance(e, RefinementBinOp):
+    #             return verify_sub_expr(e.left) and verify_sub_expr(e.right)
+    #         elif isinstance(e, RefinementLiteral):
+    #             return True
+    #         elif isinstance(e, RefinementFold):
+    #             return verify_sub_expr(e.folded_var)
+    #         else:
+    #             assert False, "No other cases"
 
-        return verify_sub_expr(c.left) and verify_sub_expr(c.right)
+    #     return verify_sub_expr(c.left) and verify_sub_expr(c.right)
 
-    def convert_type_to_refinement_var(self, t: Type) -> Optional[RefinementVar]:
+    def convert_type_to_refinement_var(self, t: Type) -> Optional[Tuple[RExpr, RefinementOptions]]:
         """Convert an unbound type to a refinement variable.
         """
         if not isinstance(t, UnboundType) or t.name is None:
             return None
 
         props = t.name.split(".")
-        name = props.pop(0)
+        name = props[0]
 
-        var = RefinementVar(name, props, line=t.line, column=t.column)
-        return var if self.validate_refinement_var(var) else None
+        if not self.validate_refinement_var(t.name, t):
+            return None
 
+        options = RefinementOptions.default()
 
-        return RefinementVar(name, props)
+        for arg in t.args:
+            if not isinstance(arg, UnboundType):
+                return None
+            if arg.name == "Expand" and len(arg.args) == 0:
+                # TODO: I'm going to need a check to make sure Expand is in
+                # scope.
+                options['expand_var'] = True
+
+        return RName(name).set_line(t), options
 
     def get_omitted_any(self, typ: Type, fullname: Optional[str] = None) -> AnyType:
         disallow_any = not self.is_typeshed_stub and self.options.disallow_any_generics

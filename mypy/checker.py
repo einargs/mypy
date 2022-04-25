@@ -79,7 +79,8 @@ from mypy.visitor import NodeVisitor
 from mypy.join import join_types
 from mypy.treetransform import TransformVisitor
 from mypy.binder import ConditionalTypeBinder, get_declaration
-from mypy.vcbinder import VerificationBinder, is_refined_type
+from mypy.refinement_builder import RefinementBuilder
+from mypy.refinement_checker import RefinementChecker
 from mypy.meet import is_overlapping_erased_types, is_overlapping_types
 from mypy.options import Options
 from mypy.plugin import Plugin, CheckerPluginInterface
@@ -172,7 +173,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
     # Helper for managing conditional types
     binder: ConditionalTypeBinder
     # Helper for checking refinement types
-    vcbinder: VerificationBinder
+    ref_builder: RefinementBuilder
     # Helper for type checking expressions
     expr_checker: mypy.checkexpr.ExpressionChecker
 
@@ -246,7 +247,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
         self.tscope = Scope()
         self.scope = CheckerScope(tree)
         self.binder = ConditionalTypeBinder()
-        self.vc_binder = VerificationBinder(self)
+        self.ref_builder = RefinementBuilder(self.msg)
         self.globals = tree.names
         self.return_types = []
         self.dynamic_funcs = []
@@ -309,6 +310,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
         Deferred functions will be processed by check_second_pass().
         """
+        print("first pass")
         self.recurse_into_functions = True
         with state.strict_optional_set(self.options.strict_optional):
             self.errors.set_file(self.path, self.tree.fullname, scope=self.tscope)
@@ -321,6 +323,15 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                             self.msg.unreachable_statement(d)
                             break
                         self.accept(d)
+                    # It seems like this mostly only happens once? Not sure
+                    # of the exact interactions.
+                    stmts = self.ref_builder.finalize_stmts()
+                    if len(stmts) > 0:
+                        print("stmts")
+                        for stmt in stmts:
+                            print(f"    {stmt}")
+                        checker = RefinementChecker()
+                        checker.check(stmts, msg=self.msg)
 
                 assert not self.current_node_deferred
 
@@ -346,6 +357,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
         This goes through deferred nodes, returning True if there were any.
         """
+        print("second_pass")
         self.recurse_into_functions = True
         with state.strict_optional_set(self.options.strict_optional):
             if not todo and not self.deferred_nodes:
@@ -1030,25 +1042,27 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     # TODO: This is just for debugging. If a function has
                     # arguments with refinements, this logs the names to give
                     # context for other logs.
+                    def is_refined_type(t: Type) -> bool:
+                        return (isinstance(t, BaseType) and t.refinements is not None)
                     is_refined_func = (any(is_refined_type(a.variable.type)
                             for a in item.arguments if a.variable.type is not None)
                             or is_refined_type(typ.ret_type))
                     if is_refined_func:
-                        print("\nstart", item.name)
-                    with self.vc_binder_enter_function():
-                        for arg in item.arguments:
-                            aty: Optional[Type] = arg.variable.type
-                            if aty is not None:
-                                self.vc_binder.add_argument(arg.variable.name, aty, ctx=arg)
+                        print("\nstart", item.name + (" stub" if self.is_stub else ""))
+                    with self.ref_builder_enter_function(is_trivial=body_is_trivial, log_stmts=is_refined_func):
+                        ret_type = self.return_types[-1]
+                        bindings = [(arg.variable.name, arg.variable.type)
+                                for arg in item.arguments
+                                if arg.variable.type is not None]
+                        if is_refined_func:
+                            print("bindings", bindings, "ret_type", ret_type)
+                        self.ref_builder.build_func_def(ret_type, bindings)
 
                         self.accept(item.body)
                         # This checks whether there is no ending return
-                        # statement, in which case we need to run our own
-                        # subsumption check.
+                        # statement, in which case we need to insert one.
                         if not self.binder.is_unreachable():
-                            ret_type = self.return_types[-1]
-                            self.vc_binder.check_subsumption(
-                                    None, None, ret_type, ctx=defn)
+                            self.ref_builder.build_empty_return(ctx=item.body.body[-1])
                     if is_refined_func:
                         print("end", item.name + "\n")
                 unreachable = self.binder.is_unreachable()
@@ -1079,11 +1093,21 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
             self.binder = old_binder
 
     @contextmanager
-    def vc_binder_enter_function(self) -> Iterator[None]:
-        old_binder = self.vc_binder
-        self.vc_binder = VerificationBinder(self)
+    def ref_builder_enter_function(
+            self, *, is_trivial: bool, log_stmts: bool) -> Iterator[None]:
+        old_builder = self.ref_builder
+        self.ref_builder = RefinementBuilder(self.msg)
         yield None
-        self.vc_binder = old_binder
+        stmts = self.ref_builder.finalize_stmts()
+        if log_stmts:
+            print("stmts:")
+            for stmt in stmts:
+                print(f"    {stmt}")
+
+        if not is_trivial:
+            checker = RefinementChecker()
+            checker.check(stmts, msg=self.msg)
+        self.ref_builder = old_builder
 
     def check_default_args(self, item: FuncItem, body_is_trivial: bool) -> None:
         for arg in item.arguments:
@@ -2353,16 +2377,23 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 # Check existing refinement annotations
                 if lvalue_type is not None:
                     # `infer_lvalue_type` being true means this wasn't explicitly
-                    # annotated. If it wasn't, we don't check against the type
+                    # annotated. In that case, we don't check against the type
                     # and instead override it.
                     if infer_lvalue_type:
-                        self.vc_binder.overwrite_inferred_lvalue(
-                                lvalue, rvalue, rvalue_type)
+                        self.ref_builder.build_assignment(
+                                lvalue, None, rvalue, rvalue_type,
+                                is_def=self.is_definition(lvalue))
                     else:
-                        self.vc_binder.check_subsumption(rvalue, rvalue_type,
-                                lvalue_type, ctx=rvalue)
-                        self.vc_binder.add_lvalue(lvalue, lvalue_type)
-                        self.vc_binder.invalidate_vars_in_expr(rvalue)
+                        self.ref_builder.build_assignment(
+                                lvalue, lvalue_type, rvalue, rvalue_type,
+                                is_def=self.is_definition(lvalue))
+                    # We clear out the eval expr here.
+                    if isinstance(rvalue_type, BaseType) and rvalue_type.refinements:
+                        # TODO: if an inferred thing is final we should probably
+                        # make it const or something? It can't be assigned to...
+                        # hmm.
+                        new_ref_info = rvalue_type.refinements.clear_eval_expr()
+                        rvalue_type = rvalue_type.copy_with_refinements(new_ref_info)
 
                 if (isinstance(rvalue_type, CallableType) and rvalue_type.is_type_obj() and
                         (rvalue_type.type_object().is_abstract or
@@ -2386,14 +2417,15 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
             if inferred:
                 rvalue_type = self.expr_checker.accept(rvalue)
                 # Add this to the refinement types
-                self.vc_binder.add_inferred_lvalue(lvalue, rvalue_type)
-                # Now we invalidate all the refinement variables after checking
-                self.vc_binder.invalidate_vars_in_expr(rvalue)
+                self.ref_builder.build_assignment(
+                        lvalue, None, rvalue, rvalue_type,
+                        is_def=self.is_definition(lvalue))
+                # We clear out the eval expr here.
                 if isinstance(rvalue_type, BaseType) and rvalue_type.refinements:
                     # TODO: if an inferred thing is final we should probably
                     # make it const or something? It can't be assigned to...
                     # hmm.
-                    new_ref_info = rvalue_type.refinements.clear_verification_var()
+                    new_ref_info = rvalue_type.refinements.clear_eval_expr()
                     rvalue_type = rvalue_type.copy_with_refinements(new_ref_info)
 
                 if not inferred.is_final:
@@ -3453,7 +3485,6 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
     def visit_expression_stmt(self, s: ExpressionStmt) -> None:
         self.expr_checker.accept(s.expr, allow_none_return=True, always_allow_any=True)
-        self.vc_binder.invalidate_vars_in_expr(s.expr)
 
     def visit_return_stmt(self, s: ReturnStmt) -> None:
         """Type check a return statement."""
@@ -3493,10 +3524,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     s.expr, return_type, allow_none_return=allow_none_func_call))
 
                 # Check refinement types
-                self.vc_binder.check_subsumption(s.expr, typ, return_type, ctx=s)
-
-                # Now we invalidate all the refinement variables after checking
-                self.vc_binder.invalidate_vars_in_expr(s.expr)
+                self.ref_builder.build_return(s.expr, typ)
 
                 if defn.is_async_generator:
                     self.fail(message_registry.RETURN_IN_ASYNC_GENERATOR, s)
@@ -3544,7 +3572,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     return
 
                 # Check refinement types
-                self.vc_binder.check_subsumption(None, None, return_type, ctx=s)
+                self.ref_builder.build_empty_return(ctx=s)
 
                 if self.in_checked_function():
                     self.fail(message_registry.RETURN_VALUE_EXPECTED, s)

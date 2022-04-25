@@ -9,7 +9,10 @@ from typing import (
     Any, TypeVar, Dict, List, Tuple, cast, Set, Optional, Union, Iterable, NamedTuple,
     Sequence, Literal,
 )
-from typing_extensions import ClassVar, Final, TYPE_CHECKING, overload, TypeAlias as _TypeAlias
+from typing_extensions import (
+    ClassVar, Final, TYPE_CHECKING, overload, TypeAlias as _TypeAlias,
+    TypedDict,
+)
 
 from mypy.backports import OrderedDict
 import mypy.nodes
@@ -21,9 +24,9 @@ from mypy.nodes import (
 from mypy.util import IdMapper
 from mypy.bogus_type import Bogus
 from mypy.var_prop import VarProp, prop_list_str, DupCall
-
-if TYPE_CHECKING:
-    from mypy.vcbinder import VerificationVar
+from mypy.refinement_ast import (
+    RType, RExpr, RIntLiteral, RTupleExpr, rexpr_substitute, RName, RVar,
+)
 
 T = TypeVar('T')
 
@@ -391,419 +394,74 @@ class ProperType(Type):
     __slots__ = ()
 
 
-SubstBindings: _TypeAlias = list[Tuple[str, Expression]]
-
-
-class RefinementExpr(mypy.nodes.Context):
-    __slots__ = ()
-
-    def substitute(self, bindings: SubstBindings) -> 'RefinementExpr':
-        return self
-
-    @abstractmethod
-    def serialize(self) -> Union[JsonDict, str]:
-        raise NotImplementedError('Cannot serialize {} instance'.format(self.__class__.__name__))
-
-    @classmethod
-    def deserialize(cls, data: JsonDict) -> 'RefinementExpr':
-        raise NotImplementedError('Cannot deserialize {} instance'.format(cls.__name__))
-
-    @abstractmethod
-    def __repr__(self) -> str:
-        raise NotImplementedError("Cannot get representation of {}".format(self.__class__.__name__))
-
-
-def deserialize_refinement_expr(data: JsonDict) -> RefinementExpr:
-    classname = data['.class']
-    method = deserialize_refinement_expr_map.get(classname)
-    if method is not None:
-        return method(data)
-    raise NotImplementedError('unexpected .class {}'.format(classname))
-
-
-class RefinementLiteral(RefinementExpr):
-    """An integer literal in a refinement constraint.
-    """
-
-    __slots__ = ('value',)
-
-    def __init__(self, value: int, line: int = -1, column: int = -1):
-        super().__init__(line, column)
-        self.value = value
-
-    def __repr__(self) -> str:
-        return str(self.value)
-
-    def serialize(self) -> JsonDict:
-        return {'.class': 'RefinementLiteral',
-                'value': self.value,
-                }
-
-    @classmethod
-    def deserialize(cls, data: JsonDict) -> 'RefinementLiteral':
-        assert data['.class'] == 'RefinementLiteral'
-        return RefinementLiteral(data['value'])
-
-
-class RefinementBinOpKind(enum.Enum):
-    add = enum.auto()
-    sub = enum.auto()
-    mult = enum.auto()
-    floor_div = enum.auto()
-
-
-class RefinementBinOp(RefinementExpr):
-    """A binary expression that adds, subtacts, multiplies, or floor divides
-    two other refinement expressions.
-    """
-    __slots__ = ('left', 'kind', 'right')
-
-    def __init__(self,
-            left: RefinementExpr,
-            kind: RefinementBinOpKind,
-            right: RefinementExpr,
-            line: int = -1, column: int = -1):
-        super().__init__(line, column)
-        self.left = left
-        self.kind = kind
-        self.right = right
-
-    def substitute(self, bindings: SubstBindings) -> 'RefinementExpr':
-        left = self.left.substitute(bindings)
-        right = self.right.substitute(bindings)
-        return RefinementBinOp(left, self.kind, right)
-
-    def __repr__(self) -> str:
-        if self.kind == RefinementBinOpKind.add:
-            kind = "+"
-        elif self.kind == RefinementBinOpKind.sub:
-            kind = "-"
-        elif self.kind == RefinementBinOpKind.mult:
-            kind = "*"
-        elif self.kind == RefinementBinOpKind.floor_div:
-            kind = "//"
-        return "({} {} {})".format(self.left, kind, self.right)
-
-    def serialize(self) -> JsonDict:
-        return {'.class': 'RefinementBinOp',
-                'left': self.left.serialize(),
-                'kind': self.kind.value,
-                'right': self.right.serialize()
-                }
-
-    @classmethod
-    def deserialize(cls, data: JsonDict) -> 'RefinementBinOp':
-        assert data['.class'] == 'RefinementBinOp'
-        return RefinementBinOp(
-                deserialize_refinement_expr(data['left']),
-                RefinementBinOpKind(data['kind']),
-                deserialize_refinement_expr(data['left']))
-
-
-class RefinementTuple(RefinementExpr):
-    """A tuple of refinement expressions.
-    """
-
-    __slots__ = ('items',)
-
-    def __init__(self, items: list[RefinementExpr],
-            line: int = -1, column: int = -1):
-        super().__init__(line, column)
-        self.items = items
-
-    def substitute(self, bindings: SubstBindings) -> 'RefinementExpr':
-        return RefinementTuple([item.substitute(bindings) for item in self.items],
-                line=self.line, column=self.column)
-
-    def __repr__(self) -> str:
-        return "({})".format(", ".join(str(e) for e in self.items))
-
-    def serialize(self) -> JsonDict:
-        return {'.class': 'RefinementTuple',
-                'items': [v.serialize() for v in self.items],
-                }
-
-    @classmethod
-    def deserialize(cls, data: JsonDict) -> 'RefinementTuple':
-        assert data['.class'] == 'RefinementTuple'
-        return RefinementTuple(
-                [deserialize_refinement_expr(v) for v in data['items']])
-
-
-class RefinementVar(RefinementExpr):
-    """A variable inside a refinement type's predicate.
-    """
-
-    __slots__ = ('name', 'props')
-
-    def __init__(self, name: str, props: Bogus[list[VarProp]] = _dummy,
-            line: int = -1, column: int = -1):
-        if props is _dummy:
-            props = []
-        super().__init__(line, column)
-        self.name = name
-        self.props = props
-
-    def substitute(self, bindings: list[Tuple[str, Expression]]) -> 'RefinementExpr':
-        def dup_size(props: list[VarProp]) -> Optional[int]:
-            if len(props) == 1 and isinstance(self.props[0], DupCall):
-                return self.props[0].size
-            else:
-                return None
-
-        for name, expr in bindings:
-            if name == self.name:
-                if isinstance(expr, IntExpr):
-                    if self.props == []:
-                        return RefinementLiteral(expr.value)
-                    elif (size := dup_size(self.props)) is not None:
-                        lit = RefinementLiteral(expr.value)
-                        return RefinementTuple([lit] * size)
-                elif (isinstance(expr, TupleExpr)
-                        and all(isinstance(e, IntExpr) for e in expr.items)):
-                    if (len(self.props) == 1
-                            and self.props[0] < len(expr.items)):
-                        return RefinementLiteral(
-                                expr.items[self.props[0]].value)
-                    elif (size := dup_size(self.props)) is not None:
-                        assert size == len(expr.items)
-                        return RefinementTuple([RefinementLiteral(item.value)
-                            for item in expr.items])
-                    elif self.props == []:
-                        return RefinementTuple([RefinementLiteral(item.value)
-                            for item in expr.items])
-        return self
-
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, RefinementVar):
-            raise NotImplementedError
-
-        return self.name == other.name and self.props == other.props
-
-    def serialize(self) -> JsonDict:
-        return {'.class': 'RefinementVar',
-                'name': self.name,
-                'props': self.props,
-                }
-
-    @classmethod
-    def deserialize(cls, data: JsonDict) -> 'RefinementVar':
-        assert data['.class'] == 'RefinementVar'
-        return RefinementVar(data['name'], data['props'])
-
-    def __repr__(self) -> str:
-        return prop_list_str(self.name, self.props)
-
-
-class RefinementSelf(RefinementExpr):
-    """Special variable representing self for use in `__init__`.
-    """
-    __slots__ = ('props',)
-
-    def __init__(self, props: Bogus[list[VarProp]] = _dummy,
-            line: int = -1, column: int = -1):
-        if props is _dummy:
-            props = []
-        super().__init__(line, column)
-        self.props = props
-
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, RefinementSelf):
-            raise NotImplementedError
-        return self.props == other.props
-
-    def serialize(self) -> JsonDict:
-        return {'.class': 'RefinementSelf',
-                'props': self.props,
-                }
-
-    def deserialize(cls, data: JsonDict) -> 'RefinementSelf':
-        assert data['.class'] == 'RefinementSelf'
-        return RefinementSelf(data['props'])
-
-    def __repr__(self) -> str:
-        return prop_list_str("RSelf", self.props)
-
-
-class RefinementFold(RefinementExpr):
-    """A fold expression.
-    """
-
-    __slots__ = ('acc_var', 'cur_var', 'expr', 'fold_expr',
-            'folded_var', 'start', 'end')
-
-    def __init__(
-        self,
-        acc_var: str,
-        cur_var: str,
-        fold_expr: RefinementExpr,
-        folded_var: Union[RefinementVar, RefinementSelf],
-        start: Optional[RefinementExpr],
-        end: Optional[RefinementExpr],
-        line: int = -1, column: int = -1
-    ) -> None:
-        self.acc_var = acc_var
-        self.cur_var = cur_var
-        self.fold_expr = fold_expr
-        self.folded_var = folded_var
-        self.start = start
-        self.end = end
-
-    def __repr__(self) -> str:
-        start = "" if self.start is None else self.start
-        end = "" if self.end is None else self.end
-        return (f"fold(lambda {self.acc_var}, {self.cur_var}: {self.fold_expr}, "
-                    "{self.folded_var}[{start}:{end}])")
-
-    def serialize(self) -> JsonDict:
-        return {'.class': 'RefinementFold',
-                'acc_var': self.acc_var,
-                'cur_var': self.cur_var,
-                'fold_expr': self.fold_expr.serialize(),
-                'folded_var': self.folded_var.serialize(),
-                'start': None if self.start is None else self.start.serialize(),
-                'end': None if self.end is None else self.end.serialize(),
-                }
-
-    @classmethod
-    def deserialize(cls, data: JsonDict) -> 'RefinementFold':
-        assert data['.class'] == 'RefinementFold'
-        return RefinementFold(
-                data['acc_var'],
-                data['cur_var'],
-                deserialize_refinement_expr(data['fold_expr']),
-                RefinementVar.deserialize(data['folded_var']),
-                None if data['start'] is None else
-                    deserialize_refinement_expr(data['start']),
-                None if data['end'] is None else
-                    deserialize_refinement_expr(data['end']))
-
-
-
-class RefinementClause(mypy.nodes.Context):
-    """Something that can fit inside one of the clauses of a refinement
-    annotation.
-    """
-
-
-class RefinementConst(RefinementClause):
-    """Special indicator meaning that the refinement conditions can be
-    considered "constant".
-    """
-
-    def __repr__(self) -> str:
-        return "Const"
-
-
-class ConstraintKind(enum.Enum):
-    EQ = enum.auto()  # ==
-    NOT_EQ = enum.auto()  # !=
-    LT = enum.auto()  # <
-    LT_EQ = enum.auto()  # <=
-    GT = enum.auto()  # >
-    GT_EQ = enum.auto()  # >=
-
-
-class RefinementConstraint(RefinementClause):
-    """A constraint on a base type. Can constraint integers, tuples of integers,
-    or properties that are integers of tuples of integers.
-    """
-
-    __slots__ = ('left', 'kind', 'right')
-
-    def __init__(self,
-            left: RefinementExpr,
-            kind: ConstraintKind,
-            right: RefinementExpr,
-            line: int = -1,
-            column: int = -1):
-        super().__init__(line, column)
-        self.left = left
-        self.kind = kind
-        self.right = right
-
-    def substitute(
-            self, bindings: SubstBindings
-            ) -> 'RefinementConstraint':
-        left = self.left.substitute(bindings)
-        right = self.right.substitute(bindings)
-        return RefinementConstraint(left, self.kind, right)
-
-    def serialize(self) -> JsonDict:
-        return {'left': self.left.serialize(),
-                'kind': self.kind.value,
-                'right': self.right.serialize(),
-                }
-
-    @classmethod
-    def deserialize(cls, data: JsonDict) -> 'RefinementConstraint':
-        return RefinementConstraint(
-                deserialize_refinement_expr(data['left']),
-                ConstraintKind(data['kind']),
-                deserialize_refinement_expr(data['right']))
-
-    def __repr__(self) -> str:
-        left = str(self.left)
-        right = str(self.right)
-        if self.kind == ConstraintKind.EQ:
-            kind = "=="
-        if self.kind == ConstraintKind.NOT_EQ:
-            kind = "!="
-        if self.kind == ConstraintKind.LT:
-            kind = "<"
-        if self.kind == ConstraintKind.LT_EQ:
-            kind = "<="
-        if self.kind == ConstraintKind.GT:
-            kind = ">"
-        if self.kind == ConstraintKind.GT_EQ:
-            kind = ">="
-        return "{} {} {}".format(left, kind, right)
+class RefinementOptions(TypedDict):
+    expand_var: bool
+
+    def default() -> 'RefinementOptions':
+        return {
+            'expand_var': False,
+        }
 
 
 class RefinementInfo:
     """All information about a refined base type.
     """
 
-    __slots__ = ('var', 'constraints', 'verification_var', 'is_const')
+    __slots__ = ('var', 'constraints', 'eval_expr', 'options')
 
     def __init__(
             self,
-            var: Optional[RefinementVar],
-            constraints: list[RefinementConstraint],
-            is_const: bool,
-            verification_var: Optional['VerificationVar'] = None
+            var: Optional[RName],
+            constraints: list[RExpr],
+            eval_expr: Optional[RExpr] = None,
+            options: Bogus[RefinementOptions] = _dummy,
             ):
         self.var = var
         self.constraints = constraints
-        self.is_const = is_const
-        self.verification_var = verification_var
+        self.eval_expr = eval_expr
+        if options is _dummy:
+            self.options = RefinementOptions.default()
+        else:
+            self.options = options
 
     def serialize(self) -> JsonDict:
-        return {'var': self.var.serialize() if self.var else None,
-                'is_const': self.is_const,
+        return {'var': self.var.name if self.var else None,
                 'constraints': [c.serialize() for c in self.constraints],
+                'eval_expr': self.eval_expr.serialize() if self.eval_expr else None,
+                'options': self.options,
                 }
 
     @classmethod
     def deserialize(cls, data: JsonDict) -> 'RefinementInfo':
         assert data['.class'] == 'RefinementInfo'
         return RefinementInfo(
-                RefinementVar.deserialize(data['var']),
-                [RefinementConstraint.deserialize(c) for c in data['constraints']],
-                data['is_const'])
+                RName(data['var']) if data['var'] is not None else None,
+                list(map(RExpr.deserialize, data['constraints'])),
+                RExpr.deserialize(data['eval_expr']) if eval_expr else None,
+                cast(RefinementOptions, data['options']))
 
-    def clear_verification_var(self) -> 'RefinementInfo':
-        return RefinementInfo(self.var, self.constraints, self.is_const)
+    def clear_eval_expr(self) -> 'RefinementInfo':
+        return RefinementInfo(self.var, self.constraints)
 
     def substitute(
             self,
-            vc_var: 'VerificationVar',
-            bindings: Bogus[SubstBindings] = _dummy
+            eval_expr: RExpr,
+            bindings: Bogus[Dict[RVar, RExpr]] = _dummy
             ) -> 'RefinementInfo':
+        def is_literal(e: RExpr) -> bool:
+            if isinstance(e, RIntLiteral):
+                return True
+            elif isinstance(e, RTupleExpr):
+                return all(isinstance(m, RIntLiteral) for m in e.members)
+
         if bindings is _dummy:
             bindings = []
-        constraints = [c.substitute(bindings) for c in self.constraints]
-        return RefinementInfo(self.var, constraints, self.is_const, vc_var)
+        else:
+            bindings = {k: v for k, v in bindings.items() if is_literal(v)}
+
+        constraints = [rexpr_substitute(c, bindings) for c in self.constraints]
+        return RefinementInfo(
+                self.var, constraints, eval_expr)
 
 
 class BaseType(ProperType):
@@ -831,13 +489,13 @@ class ConstraintSynType(ProperType):
 
     __slots__ = ('value',)
 
-    def __init__(self, value: RefinementConstraint,
+    def __init__(self, value: RExpr,
             line: int = -1, column: int = -1):
         super().__init__(line, column)
         self.value = value
 
     def accept(self, visitor: 'TypeVisitor[T]') -> T:
-        visitor.visit_constraint_syn_type(self)
+        return visitor.visit_constraint_syn_type(self)
 
 
 class TypeVarId:
@@ -2786,35 +2444,21 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
         if base.refinements is None:
             return base_str
 
-        def constraint_str(c: RefinementConstraint) -> str:
-            left = str(c.left)
-            right = str(c.right)
-            if c.kind == ConstraintKind.EQ:
-                kind = "=="
-            if c.kind == ConstraintKind.NOT_EQ:
-                kind = "!="
-            if c.kind == ConstraintKind.LT:
-                kind = "<"
-            if c.kind == ConstraintKind.LT_EQ:
-                kind = "<="
-            if c.kind == ConstraintKind.GT:
-                kind = ">"
-            if c.kind == ConstraintKind.GT_EQ:
-                kind = ">="
-            return "{} {} {}".format(left, kind, right)
+        constraints_str = ""
 
-        constraints_str = ", ".join(constraint_str(c)
-            for c in base.refinements.constraints)
+        debug_print_eval_expr = False
+        if debug_print_eval_expr and base.refinements.eval_expr:
+            constraints_str += f"{base.refinements.eval_expr}|"
 
-        if base.refinements.var is None:
-            return "{}{{{}}}".format(base_str, constraints_str)
-        else:
-            var_str = str(base.refinements.var)
+        if base.refinements.var:
+            constraints_str += f"{base.refinements.var}: "
 
-            const_str = "const " if base.refinements.is_const else ""
+        constraints_str += ", ".join(map(str, base.refinements.constraints))
 
-            return "{}{{{}{}: {}}}".format(
-                    base_str, const_str, var_str, constraints_str)
+        return "{}{{{}}}".format(base_str, constraints_str)
+
+    def visit_constraint_syn_type(self, t: ConstraintSynType) -> str:
+        return str(t.value)
 
     def visit_unbound_type(self, t: UnboundType) -> str:
         s = t.name + '?'
@@ -3212,11 +2856,6 @@ deserialize_map: Final = {
     key: obj.deserialize
     for key, obj in names.items()
     if isinstance(obj, type) and issubclass(obj, Type) and obj is not Type
-}
-deserialize_refinement_expr_map: Final = {
-    key: obj.deserialize
-    for key, obj in names.items()
-    if isinstance(obj, type) and issubclass(obj, RefinementExpr) and obj is not RefinementExpr
 }
 
 

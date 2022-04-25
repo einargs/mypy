@@ -33,7 +33,7 @@ class Context:
     def set_line(self,
                  target: Union['Context', int],
                  column: Optional[int] = None,
-                 end_line: Optional[int] = None) -> None:
+                 end_line: Optional[int] = None) -> 'Context':
         """If target is a node, pull line (and column) information
         into this node. If column is specified, this will override any column
         information coming from a node.
@@ -50,6 +50,8 @@ class Context:
 
         if end_line is not None:
             self.end_line = end_line
+
+        return self
 
     def get_line(self) -> int:
         """Don't use. Use x.line."""

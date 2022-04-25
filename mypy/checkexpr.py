@@ -36,6 +36,9 @@ from mypy.nodes import (
     ParamSpecExpr, RefinementVarExpr,
     ArgKind, ARG_POS, ARG_NAMED, ARG_STAR, ARG_STAR2, LITERAL_TYPE, REVEAL_TYPE,
 )
+from mypy.refinement_ast import (
+    RExpr, RMember, RIndex
+)
 from mypy.literals import literal
 from mypy import nodes
 from mypy import operators
@@ -66,7 +69,6 @@ from mypy.plugin import (
     MethodContext, MethodSigContext,
     FunctionContext, FunctionSigContext,
 )
-from mypy.vcbinder import is_refined_type, to_real_var
 from mypy.typeops import (
     try_expanding_sum_type_to_union, tuple_fallback, make_simplified_union,
     true_only, false_only, erase_to_union_or_bound, function_type,
@@ -1057,19 +1059,19 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         # This needs to happen before we check argument types because otherwise
         # information about self won't be loaded in for later arguments to use.
         self_expr: Optional[Expression] = None
-        if callable_name.endswith("__call__"):
+        if callable_name is not None and callable_name.endswith("__call__"):
             self_expr = callable_node
         elif (isinstance(callable_node, MemberExpr)
                 and len(callee.bound_args) > 0 and len(callee.erased_args) > 0):
             self_expr = callable_node.expr
 
-        if self_expr:
-            assert len(callee.bound_args) == 1 and len(callee.erased_args) == 1
-            expr_type = callee.bound_args[0]
-            expected_type = callee.erased_args[0]
-            # TODO: figure out if we get the erased args in other situations
-            # Checks the self type thing.
-            self.chk.vc_binder.check_subsumption(self_expr, expr_type, expected_type, ctx=self_expr)
+        # I think I can move this down
+        # if self_expr:
+        #     assert len(callee.bound_args) == 1 and len(callee.erased_args) == 1
+        #     expr_type = callee.bound_args[0]
+        #     expected_type = callee.erased_args[0]
+        #     # TODO: figure out if we get the erased args in other situations
+        #     ref_call_bindings.append((self_expr, expr_type, expected_type))
 
         arg_info = self.check_argument_types(arg_types, arg_kinds, args, callee,
                 formal_to_actual, context, messages=arg_messages, object_type=object_type)
@@ -1092,36 +1094,26 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             callee = callee.copy_modified(ret_type=new_ret_type)
 
         # Here we check the refinement types for all the arguments
-        # order: expected type, expr, expr_type
-        arg_bindings: list[Tuple[Type, Expression, Type]] = []
+        # order: expr, expr_type, expected_type
+        ref_call_bindings: list[Tuple[Expression, Type, Type]] = []
 
         if self_expr:
+            assert len(callee.bound_args) == 1 and len(callee.erased_args) == 1
             expr_type = callee.bound_args[0]
             expected_type = callee.erased_args[0]
-            arg_bindings.append((expected_type, self_expr, expr_type))
+            # TODO: figure out if we get the erased args in other situations
+            ref_call_bindings.append((self_expr, expr_type, expected_type))
 
         for arg_expr, arg_type, expected_type in arg_info:
-            arg_bindings.append((expected_type, arg_expr, arg_type))
+            ref_call_bindings.append((arg_expr, arg_type, expected_type))
 
         # This checks the argument types.
-        self.chk.vc_binder.check_call_args(arg_bindings, ctx=context)
+        ret_type_with_eval = self.chk.ref_builder.build_call(
+                callee.ret_type, ref_call_bindings, call_ctx=context)
 
         # Here we perform substitution for the return type.
-        if is_refined_type(callee.ret_type):
-            assert callee.ret_type.refinements is not None
-
-            # We generate the important bindings for getting the return.
-            bindings = [(expect.refinements.var.name, expr, expr_type)
-                for (expect, expr, expr_type) in arg_bindings
-                if (isinstance(expect, BaseType)
-                    and expect.refinements
-                    and expect.refinements.var)]
-            ret_var = self.chk.vc_binder.var_for_call_expr(
-                    callee.ret_type, bindings, ctx=context)
-            subst_bindings = [(name, expr) for (name, expr, _) in bindings]
-            ref_info = callee.ret_type.refinements.substitute(ret_var, subst_bindings)
-            ret_type = callee.ret_type.copy_with_refinements(ref_info)
-            return ret_type, callee
+        if ret_type_with_eval is not None:
+            return ret_type_with_eval, callee
         else:
             return callee.ret_type, callee
 
@@ -2143,6 +2135,16 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         """Visit member expression (of form e.id)."""
         self.chk.module_refs.update(extract_refexpr_names(e))
         result = self.analyze_ordinary_member_access(e, is_lvalue)
+        # If there's an eval_expr on the child, we add an RMember to this.
+        if isinstance(result, BaseType):
+            base_ty = self.accept(e.expr)
+            if (isinstance(base_ty, BaseType)
+                    and base_ty.refinements
+                    and base_ty.refinements.eval_expr):
+                base_expr = base_ty.refinements.eval_expr
+                if result.refinements is None:
+                    result.refinements = RefinementInfo(None, [])
+                result.refinements.eval_expr = RMember(base_expr, e.name)
         return self.narrow_type_from_binder(e, result)
 
     def analyze_ordinary_member_access(self, e: MemberExpr,
@@ -2279,24 +2281,19 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                     if right_radd_method is None:
                         return self.concat_tuples(proper_left_type, proper_right_type)
 
-
         if e.op in operators.op_methods:
             method = self.get_operator_method(e.op)
             result, method_type = self.check_op(method, left_type, e.right, e,
                                                 allow_reverse=True)
             e.method_type = method_type
-            
-            if (isinstance(result, Instance)
-                    and result.type.fullname == "builtins.int"
-                    and e.op in ('+', '-', '*', '//')):
-                proper_right_type = get_proper_type(self.accept(e.right))
-                result_var = self.chk.vc_binder.var_for_bin_op(
-                        e, proper_left_type, proper_right_type)
-                if result_var:
-                    ref_info = RefinementInfo(None, [], False, result_var)
-                    new_result = result.copy_with_refinements(ref_info)
-                    return new_result
-            return result
+
+            proper_right_type = get_proper_type(self.accept(e.right))
+            result_with_eval = self.chk.ref_builder.build_arith_op(
+                    e, result, proper_left_type, proper_right_type)
+            if result_with_eval:
+                return result_with_eval
+            else:
+                return result
         else:
             raise RuntimeError('Unknown operator {}'.format(e.op))
 
@@ -3008,6 +3005,18 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         if (self.is_literal_context() and isinstance(result, Instance)
                 and result.last_known_value is not None):
             result = result.last_known_value
+        # If there's an eval_expr on the child, we add an RIndex to this.
+        if (isinstance(result, BaseType)
+                and isinstance(e.index, IntExpr)):
+            base_ty = self.accept(e.base)
+            if (isinstance(base_ty, BaseType)
+                    and base_ty.refinements
+                    and base_ty.refinements.eval_expr):
+                base_expr = base_ty.refinements.eval_expr
+                if result.refinements is None:
+                    result.refinements = RefinementInfo(None, [])
+                result.refinements.eval_expr = RIndex(
+                        base_expr, e.index.value)
         return result
 
     def visit_index_expr_helper(self, e: IndexExpr) -> Type:

@@ -26,7 +26,6 @@ from mypy.nodes import (
 import mypy.checker
 from mypy.checkmember import analyze_member_access
 from mypy.visitor import ExpressionVisitor
-from mypy.literals import Key, literal, literal_hash, subkeys
 from mypy.messages import MessageBuilder
 from mypy.var_prop import VarProp, prop_list_str, MetaProp, DupCall
 import z3
@@ -286,9 +285,11 @@ def var_kind_for(typ: Type) -> Optional[VarKind]:
         return VarKind.int()
     elif (isinstance(typ, Instance)
             and typ.type.fullname == "builtins.tuple"
-            and len(typ.args) == 1
-            and is_int_type(typ.args[0])):
-        return VarKind.int_tuple(None)
+            and all(is_int_type(item) for item in typ.args)):
+        if len(typ.args) == 1:
+            return VarKind.int_tuple(None)
+        else:
+            return VarKind.int_tuple(len(typ.args))
     elif (isinstance(typ, TupleType)
             and all(is_int_type(item) for item in typ.items)):
         return VarKind.int_tuple(len(typ.items))
@@ -573,7 +574,6 @@ class VerificationBinder:
             return self.var_versions[var]
         else:
             inferred_kind = self.kind_for(var, ctx=ctx)
-            print("inferred", inferred_kind)
             new_kind = VarKind.combine(kind, inferred_kind)
             if (kind or inferred_kind) is not None and new_kind is None:
                 self.fail("mismatch between passed kind {} and inferred kind "
@@ -587,7 +587,9 @@ class VerificationBinder:
                 idx = var.props[-1]
 
                 tup = self.get_smt_expr(parent, kind=VarKind.int_tuple(None), ctx=ctx)
-                assert isinstance(tup, SMTTuple)
+                if not isinstance(tup, SMTTuple):
+                    print("tup type/sort error:", type(tup), tup.sort())
+                    assert isinstance(tup, SMTTuple)
                 tup_len = tuple_arity(tup)
                 if tup_len <= idx:
                     self.fail(f"out of bounds index {var} (length {tup_len})", ctx)
@@ -615,6 +617,7 @@ class VerificationBinder:
                     members = [parent_smt] * dup_call.size
                     smt_tuple = self.build_tuple(members)
                     self.var_versions[var] = smt_tuple
+                    print("var", var, "is", smt_tuple)
                     return smt_tuple
             else:
                 if VarKind.is_int_tuple(kind):
@@ -642,6 +645,7 @@ class VerificationBinder:
             # bc of is_array_access
             assert isinstance(idx, int)
             if (parent_tuple := self.var_versions.get(parent)) is not None:
+                print("overwriting", parent_tuple, "invalidating", idx)
                 size = tuple_arity(parent_tuple)
                 fresh_idx = self.fresh_smt_var(var)
                 new_tuple = self.build_tuple([
@@ -695,11 +699,13 @@ class VerificationBinder:
         # passed as an argument and invalidate them as children, which I'd have
         # to distinguish from them being invalidated for being used on their
         # own.)
+        #print("load_from_type::expr_var not yet", expr_var)
         if (isinstance(expr_type, BaseType)
                 and expr_type.refinements
                 and not self.is_active(expr_var)
                 and (expr_var not in self.has_been_touched
                     or expr_type.refinements.is_const)):
+            #print("load_from_type::expr_var", expr_var)
             self.touch(expr_var)
             var_bindings: list[tuple[str, VerificationVar]] = [
                     # TODO: this is kind of a hack. Ideally I would
@@ -714,6 +720,9 @@ class VerificationBinder:
             with self.var_bindings(var_bindings):
                 self.add_constraints(expr_type.refinements.constraints,
                         ctx=ctx)
+        else:
+            pass
+            #print("is", expr_var, "active", self.is_active(expr_var))
 
     def load_from_var(
             self,
@@ -722,6 +731,7 @@ class VerificationBinder:
     ) -> None:
         if self.currently_loading_from_var:
             return
+        #print("load_from_var::var", var)
         self.currently_loading_from_var = True
         base = var.copy_base()
         base_type: Optional[Type] = None
@@ -842,12 +852,14 @@ class VerificationBinder:
                 # we're checking a call site usage or something.
                 var = self.bound_var_to_name["RSelf"].extend(
                         expr.props + ext_props)
+                print("Encountered RSelf", expr, "to var", var)
             else:
                 # Otherwise we're checking the body of the function containing
                 # this.
                 var = RealVar("self", expr.props + ext_props)
             self.save_dependencies(var)
             self.load_from_var(var, ctx=expr)
+            #print("just saw", var)
             return var
         elif isinstance(expr, RefinementVar):
             # Resolve anything where we have a term variable m, but we use the
@@ -857,6 +869,7 @@ class VerificationBinder:
             var = base.extend(expr.props + ext_props)
             self.save_dependencies(var)
             self.load_from_var(var, ctx=expr)
+            #print("just saw", var)
 
             return var
         else:
@@ -938,19 +951,24 @@ class VerificationBinder:
         right = self.resolve_expr(right_expr, kind=right_kind, ctx=ctx)
 
         if kind == ConstraintKind.EQ:
-            return left == right
+            ret_val = left == right
         elif kind == ConstraintKind.NOT_EQ:
-            return left != right
+            ret_val = left != right
         elif kind == ConstraintKind.LT:
-            return left < right
+            ret_val = left < right
         elif kind == ConstraintKind.LT_EQ:
-            return left <= right
+            ret_val = left <= right
         elif kind == ConstraintKind.GT:
-            return left > right
+            ret_val = left > right
         elif kind == ConstraintKind.GT_EQ:
-            return left >= right
+            ret_val = left >= right
         else:
             assert False, "impossible by enum"
+
+        if isinstance(ret_val, bool):
+            return z3.BoolVal(ret_val, ctx=self.smt_context)
+        else:
+            return ret_val
 
     def translate_fold(
         self,
@@ -964,20 +982,14 @@ class VerificationBinder:
         in_len = tuple_arity(in_tuple)
 
         if expr.start:
-            start = self.resolve_expr(
-                    self.translate_expr(expr.start),
-                    kind=VarKind.int(),
-                    ctx=expr.start)
+            start = self.translate_expr(expr.start)
             if not isinstance(start, int):
-                self.fail(f"{expr.start} was not concrete integer", ctx)
+                self.fail(f"{expr.start} was not concrete integer; was {type(start)}", ctx)
                 raise TranslationError()
         else:
             start = 0
         if expr.end:
-            end = self.resolve_expr(
-                    self.translate_expr(expr.end),
-                    kind=VarKind.int(),
-                    ctx=expr.end)
+            end = self.translate_expr(expr.end)
             if not isinstance(end, int):
                 self.fail(f"{expr.end} was not concrete integer", ctx)
                 raise TranslationError()
@@ -1153,6 +1165,7 @@ class VerificationBinder:
             ref_var: str,
             *, ctx: Context,
             ) -> None:
+        print("adding", term_var, "ref", ref_var)
         if ref_var in self.bound_var_to_name:
             var = self.bound_var_to_name[ref_var]
             if var in self.var_versions:
@@ -1170,15 +1183,22 @@ class VerificationBinder:
             self,
             var: VerificationVar,
             typ: Type,
+            value_type: Optional[Type] = None,
             *, ctx: Context
             ) -> None:
         if not isinstance(typ, BaseType) or typ.refinements is None:
             return
         info = typ.refinements
 
+        if (isinstance(value_type, BaseType)
+                and (val_info := value_type.refinements) is not None
+                and val_info.verification_var is not None):
+            self.alias_as(val_info.verification_var, var)
+
         if info.var is not None:
             self.add_bound_var(var, info.var.name, ctx=ctx)
 
+        self.store_type(var, typ)
         self.add_constraints(info.constraints, ctx=ctx)
 
     def add_argument(self, arg_name: str, typ: Type, *, ctx: Context) -> None:
@@ -1189,6 +1209,8 @@ class VerificationBinder:
         if source in self.var_versions:
             self.var_versions[alias] = self.var_versions[source]
             del self.var_versions[source]
+        if source in self.var_types:
+            self.var_types[alias] = self.var_types[source]
         for dep in self.dependencies.get(source, set()):
             prop_len = len(source.props)
             assert source.props == dep.props[:prop_len]
@@ -1196,11 +1218,16 @@ class VerificationBinder:
             self.dependencies.setdefault(alias, set()).add(new_alias)
             self.alias_as(dep, new_alias)
 
-    def add_lvalue(self, lvalue: Lvalue, typ: Type) -> None:
+    def add_lvalue(
+            self,
+            lvalue: Lvalue,
+            lvalue_type: Type,
+            rvalue_type: Type,
+            ) -> None:
         var = to_real_var(lvalue)
         if var is None:
             return
-        self.add_var(var, typ, ctx=lvalue)
+        self.add_var(var, lvalue_type, rvalue_type, ctx=lvalue)
 
     def add_inferred_lvalue(self, lvalue: Lvalue, typ: Type) -> None:
         """Add a verification var with constraints based on the inferred type.
@@ -1273,6 +1300,7 @@ class VerificationBinder:
         assert ret_type.refinements is not None
 
         fresh_var = self.fresh_verification_var()
+        self.var_types[fresh_var] = ret_type
         var_bindings: list[tuple[str, VerificationVar]] = []
         for ref_var, expr, expr_type in bindings:
             expr_var, was_error = self.var_from_expr(expr, expr_type)
@@ -1362,6 +1390,7 @@ class VerificationBinder:
 
         fresh_var = self.fresh_verification_var()
         self.var_versions[fresh_var] = smt_expr
+        self.var_types[fresh_var] = self.chk.named_type("builtins.int")
 
         return fresh_var
 
@@ -1447,6 +1476,7 @@ class VerificationBinder:
         # around the condition and then check that conditions is unsatisfiable
         # -- that we have no way it can be *untrue*.
         goal = z3.Goal(ctx=self.smt_context)
+        print("constraints", constraints)
         goal.add(z3.Not(z3.And(constraints)))
         try:
             result = self.smt_solver.check(goal.as_expr())
@@ -1496,6 +1526,8 @@ class VerificationBinder:
                     print(f"    {constraint}")
             #print("Counter example:", self.smt_solver.model())
             print()
+        else:
+            print("Given:", self.smt_solver)
         return result == z3.unsat
 
     def check_subsumption(self,
@@ -1527,7 +1559,8 @@ class VerificationBinder:
             print(f"Location: {ctx.line}:{ctx.column}")
             try:
                 constraints = self.translate_all(info.constraints, ctx=ctx)
-            except TranslationError:
+            except TranslationError as err:
+                print("except", err)
                 return
             if not self.check_implication(constraints):
                 FAIL_MSG = "refinement type check failed"
@@ -1569,7 +1602,10 @@ class VerificationBinder:
 
         def check():
             FAIL_MSG = "refinement type check failed"
-            constraints = self.translate_all(info.constraints, ctx=ctx)
+            try:
+                constraints = self.translate_all(info.constraints, ctx=ctx)
+            except TranslationError:
+                return
             if constraints != []:
                 print(f"Location: {ctx.line}:{ctx.column}")
             if not self.check_implication(constraints):
