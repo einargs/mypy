@@ -9,7 +9,7 @@ from mypy.refinement_ast import (
     RExpr, RName, RFree, RMember, RIndex, RArith, RLogic, RCmp,
     RIntLiteral, RArithOp, RLogicOp, RCmpOp, RCond, RVar, RLoc,
     RStmt, RDecl, RHavoc, RExprAssign, RExit, RAssert, RAssume,
-    rexpr_substitute, RNoneExpr, RLenExpr, RFoldExpr, RDupExpr,
+    rexpr_substitute, RNoneExpr, RLenExpr, RFoldExpr,
     RTupleExpr, RClassHoleType, rexpr_uses_self, RDupUnionType,
 )
 from mypy.types import (
@@ -95,14 +95,6 @@ def parse_rexpr(
             if expr.callee.name == "len" and len(expr.args) == 1:
                 base = parse(expr.args[0])
                 return RLenExpr(base).set_line(expr)
-
-            elif (from_type
-                    and expr.callee.name == "dup"
-                    and len(expr.args) == 2
-                    and isinstance(expr.args[1], IntExpr)):
-                print("inside dup")
-                base = parse(expr.args[0])
-                return RDupExpr(base, expr.args[1].value).set_line(expr)
 
             elif (from_type
                     and expr.callee.name == "fold"
@@ -790,7 +782,7 @@ class RefinementBuilder:
                         expr = RTupleExpr([expr] * size)
                     else:
                         assert (isinstance(expr_type.base, RTupleType)
-                                and expr_type.size == size), \
+                                and expr_type.base.size == size), \
                             "type checking should prevent this"
                 elif expand_enabled:
                     self.fail("Expand option requires union of int and "

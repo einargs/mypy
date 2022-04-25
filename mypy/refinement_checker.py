@@ -10,7 +10,7 @@ from mypy.refinement_ast import (
     RExpr, RName, RFree, RMember, RIndex, RArith, RLogic, RCmp,
     RIntLiteral, RArithOp, RLogicOp, RCmpOp, RLoc, RVar, RCond,
     RStmt, RDecl, RHavoc, RExprAssign, RExit, RAssert, RAssume,
-    RLenExpr, RDupExpr, RFoldExpr, RTupleExpr, RNoneExpr,
+    RLenExpr, RFoldExpr, RTupleExpr, RNoneExpr,
     rexpr_substitute,
 )
 from mypy.messages import MessageBuilder
@@ -243,8 +243,6 @@ class RefinementChecker:
             return ty
         elif isinstance(expr, RLenExpr):
             return RIntType()
-        elif isinstance(expr, RDupExpr):
-            return RTupleType(expr.size)
         elif isinstance(expr, RFoldExpr):
             def read_static_int(e: RExpr) -> int:
                 if isinstance(e, RIntLiteral):
@@ -538,20 +536,6 @@ class RefinementChecker:
                 return z3.Length(smt_tuple)
             else:
                 raise RefinementError("did not evaluate to a tuple", expr.expr)
-        elif isinstance(expr, RDupExpr):
-            base = self.evaluate_expr(expr.expr)
-            sort = base.sort()
-            base_ty = self.type_of(expr.expr)
-            if isinstance(base_ty, RIntType):
-                assert sort.is_int()
-                return self.build_tuple([base] * expr.size)
-            elif isinstance(base_ty, RTupleType):
-                if base_ty.size is None:
-                    assert sort == self.seq_sort
-                else:
-                    assert base_ty.size == expr.size
-                    assert self.tuple_sort_sizes.get(sort) == expr.size
-                return base
         elif isinstance(expr, RFoldExpr):
             return self.evaluate_fold_expr(expr)
         elif isinstance(expr, RTupleExpr):

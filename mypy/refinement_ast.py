@@ -228,8 +228,6 @@ def rexpr_key(expr: Optional['RExpr']) -> Optional[Key]:
         return ('RIntLiteral', expr.value)
     elif isinstance(expr, RLenExpr):
         return ('RLenExpr', rexpr_key(expr.expr))
-    elif isinstance(expr, RDupExpr):
-        return ('RDupExpr', rexpr_key(expr.expr), expr.size)
     elif isinstance(expr, RFoldExpr):
         return ('RFoldExpr',
                 expr.acc_var,
@@ -644,42 +642,6 @@ class RLenExpr(RExpr):
         return f"len({self.expr})"
 
 
-class RDupExpr(RExpr):
-    def __init__(
-            self,
-            expr: RExpr,
-            size: int,
-            line: int = -1,
-            column: int = -1
-            ) -> None:
-        super().__init__(line, column)
-        self.expr = expr
-        self.size = size
-
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, RDupExpr):
-            return NotImplemented
-        return self.expr == other.expr and self.size == other.size
-
-    def __hash__(self) -> int:
-        key = rexpr_key(self)
-        return hash(key)
-
-    def serialize(self) -> JsonDict:
-        return {'.class': 'RDupExpr',
-                'expr': self.expr.serialize(),
-                'size': self.size,
-                }
-
-    @classmethod
-    def deserialize(cls, data: JsonDict) -> 'RDupExpr':
-        assert data['.class'] == 'RDupExpr'
-        return RDupExpr(RExpr.deserialize(data['expr']), data['size'])
-
-    def __repr__(self) -> str:
-        return f"dup({self.expr}, {self.size})"
-
-
 class RFoldExpr(RExpr):
     def __init__(
             self,
@@ -973,8 +935,6 @@ def rexpr_substitute(
             return term
         elif isinstance(term, RLenExpr):
             return RLenExpr(sub(term.expr)).set_line(term)
-        elif isinstance(term, RDupExpr):
-            return RDupExpr(sub(term.expr), term.size).set_line(term)
         elif isinstance(term, RFoldExpr):
             return RFoldExpr(
                     term.acc_var,
@@ -1010,7 +970,7 @@ def rexpr_uses_self(term: RExpr) -> bool:
         return rexpr_uses_self(term.lhs) or rexpr_uses_self(term.rhs)
     elif isinstance(term, RIntLiteral):
         return False
-    elif isinstance(term, (RLenExpr, RDupExpr)):
+    elif isinstance(term, RLenExpr):
         return rexpr_uses_self(term.expr)
     elif isinstance(term, RFoldExpr):
         return (rexpr_uses_self(term.folded_var)

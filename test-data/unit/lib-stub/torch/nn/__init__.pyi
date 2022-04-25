@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Union
 from torch import Tensor
 from typing_extensions import Annotated
 from refinement import RefinementVar, RSelf, Const
@@ -30,10 +30,10 @@ class Conv2d:
             self,
             in_channels: Annotated[int, IC],
             out_channels: Annotated[int, OC],
-            kernel_size: Annotated[Tuple[int, int], KS],
-            stride: Annotated[Tuple[int, int], SD],
-            padding: Annotated[Tuple[int, int], PD],
-            dilation: Annotated[Tuple[int, int], DL],
+            kernel_size: Annotated[Union[int, Tuple[int, int]], KS[Expand]],
+            stride: Annotated[Union[int, Tuple[int, int]], SD[Expand]],
+            padding: Annotated[Union[int, Tuple[int, int]], PD[Expand]],
+            dilation: Annotated[Union[int, Tuple[int, int]], DL[Expand]],
     ) -> Annotated[None,
             RSelf.in_channels == IC,
             RSelf.out_channels == OC,

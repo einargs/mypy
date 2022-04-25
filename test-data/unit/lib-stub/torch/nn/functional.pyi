@@ -1,5 +1,5 @@
 from refinement import RefinementVar
-from typing import Tuple
+from typing import Tuple, Union
 from typing_extensions import Annotated
 from torch import Tensor
 
@@ -16,10 +16,10 @@ DL = RefinementVar('DL')
 
 def max_pool2d(
         t: Annotated[Tensor, T, len(T.shape) == 4],
-        kernel_size: Annotated[Tuple[int, int], KS],
-        stride: Annotated[Tuple[int, int], SD],
-        padding: Annotated[Tuple[int, int], PD],
-        dilation: Annotated[Tuple[int, int], DL]
+        kernel_size: Annotated[Union[int, Tuple[int, int]], KS[Expand]],
+        stride: Annotated[Union[int, Tuple[int, int]], SD[Expand]],
+        padding: Annotated[Union[int, Tuple[int, int]], PD[Expand]],
+        dilation: Annotated[Union[int, Tuple[int, int]], DL[Expand]]
 ) -> Annotated[Tensor, S,
         S.shape == (T.shape[0],
             T.shape[1],
