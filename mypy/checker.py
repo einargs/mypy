@@ -310,7 +310,6 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
         Deferred functions will be processed by check_second_pass().
         """
-        print("first pass")
         self.recurse_into_functions = True
         with state.strict_optional_set(self.options.strict_optional):
             self.errors.set_file(self.path, self.tree.fullname, scope=self.tscope)
@@ -325,13 +324,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                         self.accept(d)
                     # It seems like this mostly only happens once? Not sure
                     # of the exact interactions.
-                    stmts = self.ref_builder.finalize_stmts()
-                    if len(stmts) > 0:
-                        print("stmts")
-                        for stmt in stmts:
-                            print(f"    {stmt}")
-                        checker = RefinementChecker()
-                        checker.check(stmts, msg=self.msg)
+                    self.check_refinement_types()
 
                 assert not self.current_node_deferred
 
@@ -357,7 +350,6 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
         This goes through deferred nodes, returning True if there were any.
         """
-        print("second_pass")
         self.recurse_into_functions = True
         with state.strict_optional_set(self.options.strict_optional):
             if not todo and not self.deferred_nodes:
@@ -1049,7 +1041,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                             or is_refined_type(typ.ret_type))
                     if is_refined_func:
                         print("\nstart", item.name + (" stub" if self.is_stub else ""))
-                    with self.ref_builder_enter_function(is_trivial=body_is_trivial, log_stmts=is_refined_func):
+                    with self.ref_builder_enter_function(is_trivial=body_is_trivial):
                         ret_type = self.return_types[-1]
                         bindings = [(arg.variable.name, arg.variable.type)
                                 for arg in item.arguments
@@ -1092,21 +1084,31 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
             self.binder = old_binder
 
-    @contextmanager
-    def ref_builder_enter_function(
-            self, *, is_trivial: bool, log_stmts: bool) -> Iterator[None]:
-        old_builder = self.ref_builder
-        self.ref_builder = RefinementBuilder(self.msg)
-        yield None
-        stmts = self.ref_builder.finalize_stmts()
-        if log_stmts:
+    def check_refinement_types(self) -> None:
+        # print("refinement is imported", "refinement" in self.modules)
+        try:
+            self.lookup_qualified("refinement.enable")
+            is_enabled = True
+        except:
+            is_enabled = False
+
+        if is_enabled:
+            stmts = self.ref_builder.finalize_stmts()
             print("stmts:")
             for stmt in stmts:
                 print(f"    {stmt}")
-
-        if not is_trivial:
             checker = RefinementChecker()
             checker.check(stmts, msg=self.msg)
+
+
+    @contextmanager
+    def ref_builder_enter_function(
+            self, *, is_trivial: bool) -> Iterator[None]:
+        old_builder = self.ref_builder
+        self.ref_builder = RefinementBuilder(self.msg)
+        yield None
+        if not is_trivial:
+            self.check_refinement_types()
         self.ref_builder = old_builder
 
     def check_default_args(self, item: FuncItem, body_is_trivial: bool) -> None:

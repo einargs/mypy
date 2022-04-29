@@ -14,3 +14,5 @@ Z = RefinementVar('Z')
 A = RefinementVar('A')
 B = RefinementVar('B')
 C = RefinementVar('C')
+
+enable = object()

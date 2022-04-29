@@ -44,6 +44,10 @@ class RType(Context):
         raise NotImplementedError("Cannot get representation of {}"
                 .format(self.__class__.__name__))
 
+    @abstractmethod
+    def __eq__(self, other: Any) -> bool:
+        return NotImplemented
+
 
 class RTupleType(RType):
     # Any size ambiguities should be resolved during translation.
@@ -69,6 +73,11 @@ class RTupleType(RType):
     def __repr__(self) -> str:
         return f"tuple({self.size})"
 
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, RTupleType):
+            return NotImplemented
+        return self.size == other.size
+
 
 class RIntType(RType):
     def serialize(self) -> JsonDict:
@@ -82,6 +91,11 @@ class RIntType(RType):
     def __repr__(self) -> str:
         return "int"
 
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, RIntType):
+            return NotImplemented
+        return True
+
 
 class RBoolType(RType):
     def serialize(self) -> JsonDict:
@@ -94,6 +108,11 @@ class RBoolType(RType):
 
     def __repr__(self) -> str:
         return "bool"
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, RBoolType):
+            return NotImplemented
+        return True
 
 
 class RNoneType(RType):
@@ -137,8 +156,20 @@ class RClassType(RType):
         return RIntType(data['fullname'], fields)
 
     def __repr__(self) -> str:
-        fields = ", ".join(f"{name}: {ty}" for name, ty in self.fields.items())
+        def f(tup: Tuple[str, RType]) -> str:
+            name, ty = tup
+            if isinstance(ty, RClassType):
+                ty_str = f"{ty.fullname}(...)"
+            else:
+                ty_str = str(ty)
+            return f"{name}: {ty_str}"
+        fields = ", ".join(map(f, self.fields.items()))
         return f"{self.fullname}({fields})"
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, RClassType):
+            return NotImplemented
+        return self.fullname == other.fullname
 
 
 class RClassHoleType(RType):
@@ -165,6 +196,11 @@ class RClassHoleType(RType):
     def __repr__(self) -> str:
         return f"ClassHole({self.type.fullname})"
 
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, RClassHoleType):
+            return NotImplemented
+        return self.type.fullname == other.type.fullname
+
 
 class RDupUnionType(RType):
     """Similar to RClassHoleType, this is only used in translation.
@@ -190,6 +226,11 @@ class RDupUnionType(RType):
 
     def __repr__(self) -> str:
         return f"DupUnion({self.size})"
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, RName):
+            return NotImplemented
+        return self.size == other.size
 
 
 rtype_deserialize_map: Final = make_deserialize_map(RType)

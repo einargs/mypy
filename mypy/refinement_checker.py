@@ -1,6 +1,6 @@
 """Checks the refinement representation.
 """
-from typing import Dict, Any, Union, Optional, Tuple, Iterator, Set
+from typing import Dict, Any, Union, Optional, Tuple, Iterator, Set, FrozenSet
 from typing_extensions import TypeAlias
 from contextlib import contextmanager
 
@@ -49,6 +49,12 @@ class RefinementError(Exception):
     def __init__(self, msg: str, ctx: Context):
         self.msg = msg
         self.ctx = ctx
+
+
+class NotDefined(RefinementError):
+    def __init__(self, var: RVar, ctx: Context):
+        super().__init__(f"{var} was not defined", ctx)
+        self.var = var
 
 
 class ContradictionError(RefinementError):
@@ -138,7 +144,7 @@ class RefinementChecker:
         sort = self.sort_for_type(RTupleType(size))
         return sort.init(*members)
 
-    def sort_for_type(self, ty: RType) -> SMTSort:
+    def sort_for_type(self, rtype: RType) -> SMTSort:
         if isinstance(ty, RTupleType):
             if (sort := self.tuple_sorts.get(ty.size)) is not None:
                 return sort
@@ -163,10 +169,12 @@ class RefinementChecker:
             if (sort := self.class_sorts.get(ty.fullname)) is not None:
                 return sort
 
+            print("building", ty.fullname)
             class_type = z3.Datatype(ty.fullname, ctx=self.smt_context)
             fields = [(attr, self.sort_for_type(ty.fields[attr]))
                     for attr in sorted(ty.fields.keys())]
             class_type.declare("init", *fields)
+            print("class_type", class_type)
             sort = class_type.create()
             self.class_sorts[ty.fullname] = sort
             return sort
@@ -179,9 +187,11 @@ class RefinementChecker:
             ty: RType,
             ) -> None:
         if isinstance(var, (RName, RFree)):
-            assert var not in self.types
-            assert var not in self.smt_vars
-            self.types[var] = ty
+            if var in self.types:
+                assert self.types[var] == ty, f"{var} already has type {self.types[var]}, conflicts with {ty}"
+            else:
+                assert var not in self.smt_vars, "declaration should happen before any definition"
+                self.types[var] = ty
         # elif isinstance(var, RMember) and isinstance(var.base, RName):
         #     # This is specifically for new properties inside __init__
 
@@ -285,7 +295,7 @@ class RefinementChecker:
             base_ty = self.type_of(expr.base)
             assert isinstance(base_ty, RClassType)
             assert expr.attr in base_ty.fields, \
-                f"{expr.attr} (expr: {expr}) was not a field in {base_ty.fullname} at {base_ty.line}:{base_ty.column}"
+                f"{expr.attr} (expr: {expr}) was not a field in {base_ty} at {expr.line}:{expr.column}"
             # Iteration order is guarenteed
             return list(sorted(base_ty.fields.keys())).index(expr.attr)
         elif isinstance(expr, RIndex):
@@ -470,7 +480,8 @@ class RefinementChecker:
     def evaluate_expr(self, expr: RExpr) -> SMTExpr:
         assert expr is not None
         if isinstance(expr, (RName, RFree)):
-            assert expr in self.smt_vars, f"{expr} not declared"
+            if expr not in self.smt_vars:
+                raise NotDefined(expr, expr)
             return self.smt_vars[expr]
         elif isinstance(expr, RIndex):
             base = self.evaluate_expr(expr.base)

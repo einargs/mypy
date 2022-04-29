@@ -18,8 +18,8 @@ def max_pool2d(
         t: Annotated[Tensor, T, len(T.shape) == 4],
         kernel_size: Annotated[Union[int, Tuple[int, int]], KS[Expand]],
         stride: Annotated[Union[int, Tuple[int, int]], SD[Expand]],
-        padding: Annotated[Union[int, Tuple[int, int]], PD[Expand]],
-        dilation: Annotated[Union[int, Tuple[int, int]], DL[Expand]]
+        padding: Annotated[Union[int, Tuple[int, int]], PD[Expand]]=(0,0),
+        dilation: Annotated[Union[int, Tuple[int, int]], DL[Expand]]=(1,1)
 ) -> Annotated[Tensor, S,
         S.shape == (T.shape[0],
             T.shape[1],

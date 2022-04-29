@@ -1103,8 +1103,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         # order: expr, expr_type, expected_type
         ref_call_bindings: list[Tuple[Expression, Type, Type]] = []
 
-        if self_expr:
-            assert len(callee.bound_args) == 1 and len(callee.erased_args) == 1
+        if self_expr and len(callee.bound_args) == 1 and len(callee.erased_args) == 1:
             expr_type = callee.bound_args[0]
             expected_type = callee.erased_args[0]
             # TODO: figure out if we get the erased args in other situations

@@ -1,5 +1,6 @@
 from typing import (
-    Dict, Any, Union, Optional, Tuple, Callable, overload, Iterator, Literal
+    Dict, Any, Union, Optional, Tuple, Callable, overload, Iterator, Literal,
+    FrozenSet,
 )
 from typing_extensions import TypeAlias
 from contextlib import contextmanager
@@ -14,6 +15,7 @@ from mypy.refinement_ast import (
 )
 from mypy.types import (
     BaseType, RefinementInfo, Type, Instance, TupleType, NoneType, UnionType,
+    RefinementOptions, LiteralType,
 )
 from mypy.nodes import (
     Expression, Context, ComparisonExpr, Var, TypeInfo,
@@ -45,7 +47,6 @@ def parse_rexpr(
             elif expr.op == '//':
                 op = RArithOp.div
             else:
-                assert False, "don't think this is possible?"
                 return None
 
             return RArith(parse(expr.left), op, parse(expr.right)).set_line(expr)
@@ -89,8 +90,6 @@ def parse_rexpr(
         elif isinstance(expr, CallExpr):
             if not isinstance(expr.callee, NameExpr):
                 return None
-
-            print("call", expr.callee.name)
 
             if expr.callee.name == "len" and len(expr.args) == 1:
                 base = parse(expr.args[0])
@@ -404,7 +403,6 @@ class RefinementBuilder:
             typing = right_ty.base
 
         if isinstance(lhs, (RName, RFree)) and (is_def or left_ty):
-            print("declare for", lhs)
             self.add(RDecl(lhs, typing))
 
         self.add(RExprAssign(lhs, typing, rhs))
@@ -425,7 +423,7 @@ class RefinementBuilder:
         assert self.in_function, "return outside of a function"
 
         if value:
-            assert self.return_type is not None
+            # assert self.return_type is not None
             assert not self.post_condition or (self.post_condition and self.return_var)
             if self.return_var:
                 self.add(RExprAssign(self.return_var,
@@ -437,65 +435,26 @@ class RefinementBuilder:
     # Then this section below is the interface between the outside types
     # and the pure refinement logic above.
 
-    def elaborate_type(
-            self,
-            ty: RType,
-            ) -> RType:
-        """If `ty` is a RClassType, convert it into an RClassType.
+    def parse_rtype(
+            self, ty: Type, *, allow_union: bool = False
+            ) -> Optional[RType]:
+        """Just parse an RType from a Type.
         """
-        if isinstance(ty, RClassHoleType):
-            fields: Dict[str, RType] = {}
-            for name, table_node in ty.type.names.items():
-                node = table_node.node
-                if isinstance(node, Var):
-                    assert node.type is not None, f"{node} in {ty.fullname} had no type"
-                    parsed = self.parse_type(node.type)
-                    if parsed.base:
-                        if isinstance(parsed.base, RClassHoleType):
-                            fields[name] = self.elaborate_type(parsed.base)
-                        else:
-                            fields[name] = parsed.base
-            return RClassType(ty.type.fullname, fields).set_line(ty)
-        elif isinstance(ty, RDupUnionType):
-            return RUnionType(list(map(self.elaborate_type, ty.types))).set_line(ty)
-        else:
-            return ty
-
-    def parse_type(self, ty: Type, *, allow_union: bool = False) -> Optional[ParsedType]:
+        def all_ints(members: list[Type]) -> bool:
+            return all(isinstance(self.parse_rtype(t), RIntType) for t in members)
         if not isinstance(ty, BaseType):
             return None
-        info = ty.refinements or RefinementInfo(None, [])
-        constraints = info.constraints.copy()
 
-        if info.var is None:
-            base_var = self.free_var("v")
+        if ty.refinements:
+            options = ty.refinements.options
         else:
-            base_var = info.var
-
-        used_base_var = False
-
-        def parse_tuple_members(members: list[Type]) -> bool:
-            nonlocal constraints, used_base_var
-            tmp_constraints = []
-            for i, member in enumerate(members):
-                parsed = self.parse_type(member)
-                if parsed is None:
-                    return False
-                if not isinstance(parsed.base, RIntType):
-                    return False
-                if parsed.cond is not None:
-                    if parsed.var is None:
-                        cond = parsed.cond
-                    else:
-                        used_base_var = True
-                        idx_var = RIndex(base_var, i)
-                        cond = rexpr_substitute(parsed.cond,
-                                {parsed.var: idx_var})
-                    tmp_constraints.append(cond)
-            constraints += tmp_constraints
-            return True
+            options = RefinementOptions.default()
 
         rtype: RType
+
+        if isinstance(ty, LiteralType):
+            print("ty is literal:", ty)
+
         if isinstance(ty, Instance):
             fullname = ty.type.fullname
             if fullname == "builtins.int":
@@ -505,7 +464,7 @@ class RefinementBuilder:
             elif fullname == "builtins.None":
                 rtype = RNoneType()
             elif fullname == "builtins.tuple":
-                if parse_tuple_members(ty.args):
+                if all_ints(ty.args):
                     if len(ty.args) == 1:
                         rtype = RTupleType(None)
                     elif len(ty.args) == 0:
@@ -516,10 +475,156 @@ class RefinementBuilder:
                 else:
                     return None
             else:
-                for name, table_node in ty.type.names.items():
+                rtype = RClassHoleType(ty.type)
+        elif isinstance(ty, NoneType):
+            rtype = RNoneType()
+        elif isinstance(ty, UnionType):
+            # To accept a union as a valid thing, we need to have the expand_var
+            # option enabled so that the value of the variable is consistent.
+            if not (options['expand_var'] and allow_union):
+                return None
+            if not len(ty.items) == 2:
+                return None
+            ty1 = self.parse_rtype(ty.items[0])
+            ty2 = self.parse_rtype(ty.items[1])
+
+            # TODO: this discards any constraints on the components. Maybe
+            # include a warning about that?
+
+            if ty1 is None or ty2 is None:
+                return None
+
+            if isinstance(ty1, RIntType) and isinstance(ty2, RTupleType):
+                if ty2.size is None:
+                    return None
+                rtype = RDupUnionType(ty2.size)
+            elif isinstance(ty2, RIntType) and isinstance(ty1, RTupleType):
+                if ty1.size is None:
+                    return None
+                rtype = RDupUnionType(ty1.size)
+            else:
+                return None
+        elif isinstance(ty, TupleType):
+            if all_ints(ty.items):
+                rtype = RTupleType(len(ty.items))
+            else:
+                return None
+        else:
+            return None
+
+        return rtype.set_line(ty)
+
+    def elaborate_type(
+            self,
+            ty: RType,
+            ) -> RType:
+        """If `ty` is a RClassType, convert it into an RClassType.
+        """
+        cache: Dict[str, RType] = {}
+
+        skip_fields = set((
+            "__hash__",
+            "__dict__",
+            "__module__",
+            "__annotations__",
+            "__doc__",
+            "__constants__",
+        ))
+
+        skip_types = set((
+            "builtins.list",
+            "builtins.dict",
+            "builtins.str",
+            "builtins.set",
+            "builtins.float",
+        ))
+
+        def elab(ty: RType, parents: FrozenSet[str]):
+            nonlocal cache
+            if isinstance(ty, RClassHoleType):
+                if ty.type.fullname in cache:
+                    rtype = cache[ty.type.fullname]
+                    return RClassType(rtype.fullname, rtype.fields).set_line(ty)
+
+                fields: Dict[str, RType] = {}
+                rtype = RClassType(ty.type.fullname, fields)
+                cache[ty.type.fullname] = rtype
+
+                for info in ty.type.mro:
+                    for name, table_node in info.names.items():
+                        if name in skip_fields:
+                            continue
+                        if name in fields:
+                            continue
+                        node = table_node.node
+                        if isinstance(node, Var):
+                            if isinstance(node.type, Instance) and node.type.type.fullname in skip_types:
+                                continue
+                            assert node.type is not None, f"{node} in {ty.fullname} had no type"
+                            parsed = self.parse_rtype(node.type)
+                            if parsed:
+                                if isinstance(parsed, RClassHoleType):
+                                    fields[name] = elab(parsed)
+                                else:
+                                    fields[name] = parsed
+                return RClassType(ty.type.fullname, fields).set_line(ty)
+            else:
+                return ty
+
+        return elab(ty, frozenset())
+
+    def parse_type(self, ty: Type, *, allow_union: bool = False) -> Optional[ParsedType]:
+        visited: Set[str] = set()
+
+        def parse(ty: Type) -> Optional[ParsedType]:
+            nonlocal visited
+            if not isinstance(ty, BaseType):
+                return None
+            info = ty.refinements or RefinementInfo(None, [])
+            constraints = info.constraints.copy()
+
+            if info.var is None:
+                base_var = self.free_var("v")
+            else:
+                base_var = info.var
+
+            used_base_var = False
+
+            rtype = self.parse_rtype(ty, allow_union=allow_union)
+
+            if rtype is None:
+                return None
+
+            def load_tuple_constraints(members: list[Type]) -> None:
+                nonlocal constraints, used_base_var
+                tmp_constraints = []
+                for i, member in enumerate(members):
+                    parsed = parse(member)
+                    assert isinstance(parsed.base, RIntType)
+                    if parsed.cond is not None:
+                        if parsed.var is None:
+                            cond = parsed.cond
+                        else:
+                            used_base_var = True
+                            idx_var = RIndex(base_var, i)
+                            cond = rexpr_substitute(parsed.cond,
+                                    {parsed.var: idx_var})
+                        tmp_constraints.append(cond)
+                constraints += tmp_constraints
+
+            if isinstance(rtype, RClassHoleType):
+                visited.add(rtype.type.fullname)
+                def not_visited(type: Type) -> bool:
+                    nonlocal visited
+                    if isinstance(type, Instance):
+                        return type.type.fullname not in visited
+                    return True
+                for name, table_node in rtype.type.names.items():
                     node = table_node.node
-                    if isinstance(node, Var) and node.type is not None:
-                        parsed = self.parse_type(node.type)
+                    if (isinstance(node, Var)
+                            and node.type is not None
+                            and not_visited(node.type)):
+                        parsed = parse(node.type)
                         if parsed is not None:
                             if parsed.cond is not None:
                                 substs: Dict[RName, RExpr] = {}
@@ -534,66 +639,44 @@ class RefinementBuilder:
                                 new_cond = rexpr_substitute(parsed.cond, substs)
 
                                 constraints.append(new_cond)
+            elif isinstance(rtype, RTupleType):
+                if rtype.size is not None:
+                    if isinstance(ty, Instance):
+                        assert ty.type.fullname == "builtins.tuple"
+                        assert len(ty.args) > 1
+                        load_tuple_constraints(ty.args)
+                    elif isinstance(ty, TupleType):
+                        load_tuple_constraints(ty.items)
+                    else:
+                        # These should be the only forms that can produce an
+                        # RTupleType.
+                        assert False
 
-                rtype = RClassHoleType(ty.type)
-        elif isinstance(ty, NoneType):
-            rtype = RNoneType()
-        elif isinstance(ty, UnionType):
-            # To accept a union as a valid thing, we need to have the expand_var
-            # option enabled so that the value of the variable is consistent.
-            if not (info.options['expand_var'] and allow_union):
-                return None
-            if not len(ty.items) == 2:
-                return None
-            ty1 = self.parse_type(ty.items[0])
-            ty2 = self.parse_type(ty.items[1])
-
-            if ty1 is None or ty2 is None:
-                return None
-
-            if isinstance(ty1.base, RIntType) and isinstance(ty2.base, RTupleType):
-                if ty2.base.size is None:
-                    return None
-                rtype = RDupUnionType(ty2.base.size)
-            elif isinstance(ty2.base, RIntType) and isinstance(ty1.base, RTupleType):
-                if ty1.base.size is None:
-                    return None
-                rtype = RDupUnionType(ty1.base.size)
+            if info.var:
+                out_var = info.var
+            elif used_base_var:
+                out_var = base_var
             else:
-                return None
-        elif isinstance(ty, TupleType):
-            if parse_tuple_members(ty.items):
-                rtype = RTupleType(len(ty.items))
+                out_var = None
+
+            if len(constraints) > 1:
+                full_cond = RLogic(RLogicOp.and_op, constraints).set_line(constraints[0])
+            elif len(constraints) == 1:
+                full_cond = constraints[0]
             else:
-                return None
-        else:
-            return None
+                full_cond = None
 
-        rtype.set_line(ty)
+            if full_cond and (full_cond.line == -1 or full_cond.column == -1):
+                print(full_cond)
+                assert False
 
-        if info.var:
-            out_var = info.var
-        elif used_base_var:
-            out_var = base_var
-        else:
-            out_var = None
+            return ParsedType(
+                    rtype,
+                    full_cond,
+                    out_var,
+                    info.eval_expr)
 
-        if len(constraints) > 1:
-            full_cond = RLogic(RLogicOp.and_op, constraints).set_line(constraints[0])
-        elif len(constraints) == 1:
-            full_cond = constraints[0]
-        else:
-            full_cond = None
-
-        if full_cond and (full_cond.line == -1 or full_cond.column == -1):
-            print(full_cond)
-            assert False
-
-        return ParsedType(
-                rtype,
-                full_cond,
-                out_var,
-                info.eval_expr)
+        return parse(ty)
 
     @overload
     def parse_typed_expr(
@@ -692,31 +775,30 @@ class RefinementBuilder:
         with self.log_errors():
             self.insert_return(None, ctx=ctx)
 
-    def build_index_from_call(
-            self,
-            raw_ret_type: Type,
-            raw_bindings: list[Tuple[Expression, Type, Type]],
-            ) -> Optional[RIndex]:
-        """This gets called when callable_name ends with __getitem__.
-        """
-        print("building index", len(raw_bindings))
-        if not len(raw_bindings) == 2:
-            return None
+    # def build_index_from_call(
+    #         self,
+    #         raw_ret_type: Type,
+    #         raw_bindings: list[Tuple[Expression, Type, Type]],
+    #         ) -> Optional[RIndex]:
+    #     """This gets called when callable_name ends with __getitem__.
+    #     """
+    #     if not len(raw_bindings) == 2:
+    #         return None
 
-        raw_base, raw_base_type, _ = raw_bindings[0]
-        raw_index, _, _ = raw_bindings[1]
+    #     raw_base, raw_base_type, _ = raw_bindings[0]
+    #     raw_index, _, _ = raw_bindings[1]
 
-        if not isinstance(raw_index, IntExpr):
-            return None
-        index = raw_index.value
+    #     if not isinstance(raw_index, IntExpr):
+    #         return None
+    #     index = raw_index.value
 
-        tup = self.parse_typed_expr(raw_base, raw_base_type, throw=False)
-        if tup is None:
-            return None
-        base, _ = tup
+    #     tup = self.parse_typed_expr(raw_base, raw_base_type, throw=False)
+    #     if tup is None:
+    #         return None
+    #     base, _ = tup
 
-        print("built index")
-        return RIndex(base, index)
+    #     print("built index")
+    #     return RIndex(base, index)
 
     def build_ref_expr(self, raw_expr: RefExpr, type: Type) -> Type:
         """Basically this just adds an rexpr as an eval_expr.
@@ -739,9 +821,8 @@ class RefinementBuilder:
             # (expr, expr_type, expected_type)
             raw_bindings: list[Tuple[Expression, Type, Type]],
             *, call_ctx: Context,
-            callable_name: str,
+            callable_name: Optional[str],
             ) -> Optional[Type]:
-
         def package_eval_expr(e: RExpr, s: Dict[RVar, RExpr]) -> Type:
             e.set_line(call_ctx)
             if raw_ret_type.refinements:
@@ -752,7 +833,7 @@ class RefinementBuilder:
             return new_ret_type
 
         with self.log_errors():
-            if callable_name.endswith("__getitem__"):
+            if callable_name is not None and callable_name.endswith("__getitem__"):
                 return None
 
             ret_type = self.parse_type(raw_ret_type)
@@ -830,11 +911,14 @@ class RefinementBuilder:
             if not isinstance(result_type.base, RIntType):
                 return None
 
-            left, _ = self.parse_typed_expr(raw_expr.left, raw_left_type, throw=False)
-            right, _ = self.parse_typed_expr(raw_expr.right, raw_right_type, throw=False)
+            left_tup = self.parse_typed_expr(raw_expr.left, raw_left_type, throw=False)
+            right_tup = self.parse_typed_expr(raw_expr.right, raw_right_type, throw=False)
 
-            if left is None or right is None:
+            if left_tup is None or right_tup is None:
                 return None
+
+            left, _ = left_tup
+            right, _ = right_tup
 
             result_expr = RArith(left, op, right)
             ref_info = RefinementInfo(None, [], result_expr)

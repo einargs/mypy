@@ -425,7 +425,8 @@ class RefinementInfo:
             self.options = options
 
     def serialize(self) -> JsonDict:
-        return {'var': self.var.name if self.var else None,
+        return {'.class': 'RefinementInfo',
+                'var': self.var.name if self.var else None,
                 'constraints': [c.serialize() for c in self.constraints],
                 'eval_expr': self.eval_expr.serialize() if self.eval_expr else None,
                 'options': self.options,
@@ -433,11 +434,11 @@ class RefinementInfo:
 
     @classmethod
     def deserialize(cls, data: JsonDict) -> 'RefinementInfo':
-        assert data['.class'] == 'RefinementInfo'
+        assert '.class' in data and data['.class'] == 'RefinementInfo', f"unexpected data: {data}"
         return RefinementInfo(
                 RName(data['var']) if data['var'] is not None else None,
                 list(map(RExpr.deserialize, data['constraints'])),
-                RExpr.deserialize(data['eval_expr']) if eval_expr else None,
+                RExpr.deserialize(data['eval_expr']) if data['eval_expr'] is not None else None,
                 cast(RefinementOptions, data['options']))
 
     def clear_eval_expr(self) -> 'RefinementInfo':
