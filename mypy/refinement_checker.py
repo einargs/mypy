@@ -144,7 +144,7 @@ class RefinementChecker:
         sort = self.sort_for_type(RTupleType(size))
         return sort.init(*members)
 
-    def sort_for_type(self, rtype: RType) -> SMTSort:
+    def sort_for_type(self, ty: RType) -> SMTSort:
         if isinstance(ty, RTupleType):
             if (sort := self.tuple_sorts.get(ty.size)) is not None:
                 return sort
@@ -169,12 +169,10 @@ class RefinementChecker:
             if (sort := self.class_sorts.get(ty.fullname)) is not None:
                 return sort
 
-            print("building", ty.fullname)
             class_type = z3.Datatype(ty.fullname, ctx=self.smt_context)
             fields = [(attr, self.sort_for_type(ty.fields[attr]))
                     for attr in sorted(ty.fields.keys())]
             class_type.declare("init", *fields)
-            print("class_type", class_type)
             sort = class_type.create()
             self.class_sorts[ty.fullname] = sort
             return sort
@@ -521,7 +519,7 @@ class RefinementChecker:
 
             tup = self.regularize_sorts(lhs, rhs)
             if tup is None:
-                raise RefinementError("type mismatch with {expr.rhs}", expr.lhs)
+                raise RefinementError(f"type mismatch with {expr.rhs}", expr.lhs)
             lhs, rhs = tup
 
             if expr.op == RCmpOp.eq:
@@ -566,9 +564,9 @@ class RefinementChecker:
         CONFIG = {
             "should_log": True,
             "show_statistics": False,
-            "show_vars": True,
+            "show_vars": False,
             "show_raw_vars": False,
-            "show_priors": True,
+            "show_priors": False,
             # Check if the existing conditions are satisfiable before checking
             # the smt expressions.
             "check_priors": True,
@@ -640,7 +638,7 @@ class RefinementChecker:
             raise RefinementError("refinement type check failed", cond)
 
     def interpret_stmt(self, stmt: RStmt) -> None:
-        print("interpreting", stmt)
+        #print("interpreting", stmt)
         if isinstance(stmt, RHavoc):
             self.havoc(stmt.var)
         elif isinstance(stmt, RDecl):
@@ -669,7 +667,6 @@ class RefinementChecker:
             try:
                 self.interpret_stmt(stmt)
             except RefinementError as err:
-                print("err", type(err))
                 if err.ctx.line != -1 and err.ctx.column != -1:
                     msg.fail(err.msg, err.ctx)
                     if isinstance(err, ContradictionError):

@@ -1,6 +1,6 @@
 from typing import (
     Dict, Any, Union, Optional, Tuple, Callable, overload, Iterator, Literal,
-    FrozenSet,
+    FrozenSet, Sequence,
 )
 from typing_extensions import TypeAlias
 from contextlib import contextmanager
@@ -237,6 +237,14 @@ class RefinementBuilder:
         # Holds the bindings for the refinement variables.
         self.ref_var_bindings: Dict[RVar, RExpr] = {}
 
+        self.skip_types = frozenset((
+            "builtins.list",
+            "builtins.dict",
+            "builtins.str",
+            "builtins.set",
+            "builtins.float",
+        ))
+
     @contextmanager
     def log_errors(self) -> Iterator[None]:
         try:
@@ -406,9 +414,6 @@ class RefinementBuilder:
             self.add(RDecl(lhs, typing))
 
         self.add(RExprAssign(lhs, typing, rhs))
-        #if right_ty.cond:
-            #cond = right_ty.cond_substitute(lhs)
-            #self.add(RAssume(cond))
         if left_ty and left_ty.var:
             self.ref_var_bindings[left_ty.var] = lhs
         if left_ty and left_ty.cond:
@@ -440,7 +445,7 @@ class RefinementBuilder:
             ) -> Optional[RType]:
         """Just parse an RType from a Type.
         """
-        def all_ints(members: list[Type]) -> bool:
+        def all_ints(members: Sequence[Type]) -> bool:
             return all(isinstance(self.parse_rtype(t), RIntType) for t in members)
         if not isinstance(ty, BaseType):
             return None
@@ -451,9 +456,6 @@ class RefinementBuilder:
             options = RefinementOptions.default()
 
         rtype: RType
-
-        if isinstance(ty, LiteralType):
-            print("ty is literal:", ty)
 
         if isinstance(ty, Instance):
             fullname = ty.type.fullname
@@ -474,8 +476,15 @@ class RefinementBuilder:
                         rtype = RTupleType(len(ty.args))
                 else:
                     return None
+            elif fullname in self.skip_types:
+                return None
             else:
-                rtype = RClassHoleType(ty.type)
+                for info in ty.type.mro:
+                    if info.fullname == "builtins.tuple":
+                        rtype = RTupleType(None)
+                        break
+                else:
+                    rtype = RClassHoleType(ty.type)
         elif isinstance(ty, NoneType):
             rtype = RNoneType()
         elif isinstance(ty, UnionType):
@@ -522,7 +531,7 @@ class RefinementBuilder:
         """
         cache: Dict[str, RType] = {}
 
-        skip_fields = set((
+        skip_fields = frozenset((
             "__hash__",
             "__dict__",
             "__module__",
@@ -531,17 +540,13 @@ class RefinementBuilder:
             "__constants__",
         ))
 
-        skip_types = set((
-            "builtins.list",
-            "builtins.dict",
-            "builtins.str",
-            "builtins.set",
-            "builtins.float",
-        ))
-
-        def elab(ty: RType, parents: FrozenSet[str]):
+        def elab(ty: RType, parents: FrozenSet[str]) -> Optional[RType]:
             nonlocal cache
             if isinstance(ty, RClassHoleType):
+                # We shouldn't have anything from skip_types inside even at
+                # the start.
+                assert ty.type.fullname not in self.skip_types
+                assert ty.type.fullname not in parents
                 if ty.type.fullname in cache:
                     rtype = cache[ty.type.fullname]
                     return RClassType(rtype.fullname, rtype.fields).set_line(ty)
@@ -549,6 +554,8 @@ class RefinementBuilder:
                 fields: Dict[str, RType] = {}
                 rtype = RClassType(ty.type.fullname, fields)
                 cache[ty.type.fullname] = rtype
+
+                new_parents = parents | frozenset((ty.type.fullname,))
 
                 for info in ty.type.mro:
                     for name, table_node in info.names.items():
@@ -558,13 +565,16 @@ class RefinementBuilder:
                             continue
                         node = table_node.node
                         if isinstance(node, Var):
-                            if isinstance(node.type, Instance) and node.type.type.fullname in skip_types:
+                            if node.type is None:
                                 continue
-                            assert node.type is not None, f"{node} in {ty.fullname} had no type"
+                            if (isinstance(node.type, Instance) and
+                                    (node.type.type.fullname in new_parents
+                                        or node.type.type.fullname in self.skip_types)):
+                                continue
                             parsed = self.parse_rtype(node.type)
                             if parsed:
                                 if isinstance(parsed, RClassHoleType):
-                                    fields[name] = elab(parsed)
+                                    fields[name] = elab(parsed, new_parents)
                                 else:
                                     fields[name] = parsed
                 return RClassType(ty.type.fullname, fields).set_line(ty)
@@ -574,10 +584,7 @@ class RefinementBuilder:
         return elab(ty, frozenset())
 
     def parse_type(self, ty: Type, *, allow_union: bool = False) -> Optional[ParsedType]:
-        visited: Set[str] = set()
-
-        def parse(ty: Type) -> Optional[ParsedType]:
-            nonlocal visited
+        def parse(ty: Type, visited: FrozenSet[str]) -> Optional[ParsedType]:
             if not isinstance(ty, BaseType):
                 return None
             info = ty.refinements or RefinementInfo(None, [])
@@ -596,10 +603,10 @@ class RefinementBuilder:
                 return None
 
             def load_tuple_constraints(members: list[Type]) -> None:
-                nonlocal constraints, used_base_var
+                nonlocal constraints, used_base_var, visited
                 tmp_constraints = []
                 for i, member in enumerate(members):
-                    parsed = parse(member)
+                    parsed = parse(member, visited)
                     assert isinstance(parsed.base, RIntType)
                     if parsed.cond is not None:
                         if parsed.var is None:
@@ -613,7 +620,7 @@ class RefinementBuilder:
                 constraints += tmp_constraints
 
             if isinstance(rtype, RClassHoleType):
-                visited.add(rtype.type.fullname)
+                visited |= frozenset((rtype.type.fullname,))
                 def not_visited(type: Type) -> bool:
                     nonlocal visited
                     if isinstance(type, Instance):
@@ -624,7 +631,7 @@ class RefinementBuilder:
                     if (isinstance(node, Var)
                             and node.type is not None
                             and not_visited(node.type)):
-                        parsed = parse(node.type)
+                        parsed = parse(node.type, visited)
                         if parsed is not None:
                             if parsed.cond is not None:
                                 substs: Dict[RName, RExpr] = {}
@@ -666,17 +673,13 @@ class RefinementBuilder:
             else:
                 full_cond = None
 
-            if full_cond and (full_cond.line == -1 or full_cond.column == -1):
-                print(full_cond)
-                assert False
-
             return ParsedType(
                     rtype,
                     full_cond,
                     out_var,
                     info.eval_expr)
 
-        return parse(ty)
+        return parse(ty, frozenset())
 
     @overload
     def parse_typed_expr(

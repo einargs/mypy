@@ -3090,12 +3090,8 @@ class SemanticAnalyzer(NodeVisitor[None],
         names = ("refinement.RefinementVar",)
 
         call = self.get_typevarlike_declaration(s, names)
-        if isinstance(s.lvalues[0], NameExpr) and s.lvalues[0].name == "T":
-            print("fullname", s.rvalue.callee.fullname)
-        print("process refinement_var_declaration", s.lvalues[0], call)
         if call is None:
             return False
-        print("stage 1")
 
         lvalue = s.lvalues[0]
         assert isinstance(lvalue, NameExpr)

@@ -324,7 +324,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                         self.accept(d)
                     # It seems like this mostly only happens once? Not sure
                     # of the exact interactions.
-                    self.check_refinement_types()
+                    self.check_refinement_types(True)
 
                 assert not self.current_node_deferred
 
@@ -1084,22 +1084,27 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
             self.binder = old_binder
 
-    def check_refinement_types(self) -> None:
-        # print("refinement is imported", "refinement" in self.modules)
+    def check_refinement_types(self, log_fail: bool = False) -> None:
+        enable_name = "enable_refinement_type_checking"
         try:
-            self.lookup_qualified("refinement.enable")
-            is_enabled = True
+            _ = self.lookup_qualified(f"refinement.{enable_name}")
         except:
-            is_enabled = False
+            return
 
-        if is_enabled:
-            stmts = self.ref_builder.finalize_stmts()
-            print("stmts:")
-            for stmt in stmts:
-                print(f"    {stmt}")
-            checker = RefinementChecker()
-            checker.check(stmts, msg=self.msg)
+        enable = self.globals.get(enable_name)
 
+        if enable is None:
+            return
+
+        if not (isinstance(enable.node, Var)):
+            return
+
+        stmts = self.ref_builder.finalize_stmts()
+        print("stmts:")
+        for stmt in stmts:
+            print(f"    {stmt}")
+        checker = RefinementChecker()
+        checker.check(stmts, msg=self.msg)
 
     @contextmanager
     def ref_builder_enter_function(

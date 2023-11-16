@@ -21,6 +21,9 @@ if TYPE_CHECKING:
     from mypy.patterns import Pattern
 
 
+ContextSelf = TypeVar('S', bound='Context')
+
+
 class Context:
     """Base type for objects that are valid as error message locations."""
     __slots__ = ('line', 'column', 'end_line')
@@ -30,10 +33,10 @@ class Context:
         self.column = column
         self.end_line: Optional[int] = None
 
-    def set_line(self,
+    def set_line(self: ContextSelf,
                  target: Union['Context', int],
                  column: Optional[int] = None,
-                 end_line: Optional[int] = None) -> 'Context':
+                 end_line: Optional[int] = None) -> ContextSelf:
         """If target is a node, pull line (and column) information
         into this node. If column is specified, this will override any column
         information coming from a node.

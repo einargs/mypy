@@ -464,6 +464,12 @@ class RefinementInfo:
         return RefinementInfo(
                 self.var, constraints, eval_expr)
 
+    def __repr__(self) -> str:
+        eval_str = f"{self.eval_expr}| " if self.eval_expr else ""
+        var_str = f"{self.var}: " if self.var else ""
+        con_str = ", ".join(str(c) for c in self.constraints)
+        return f"{{{eval_str}{var_str}{con_str} ({self.options})}}"
+
 
 class BaseType(ProperType):
     """A type that can have refinement constraints added to it.
@@ -1197,7 +1203,7 @@ class Instance(BaseType):
     def serialize(self) -> Union[JsonDict, str]:
         assert self.type is not None
         type_ref = self.type.fullname
-        if not self.args and not self.last_known_value:
+        if not self.args and not self.last_known_value and not self.refinements:
             return type_ref
         data: JsonDict = {
             ".class": "Instance",

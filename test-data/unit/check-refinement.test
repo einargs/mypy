@@ -1,5 +1,6 @@
 [case testRefinementLiteral]
 from typing_extensions import Annotated
+import refinement
 from refinement import *
 def f0() -> Annotated[int, A, A > 5]:
     return 9

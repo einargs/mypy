@@ -127,6 +127,11 @@ class RNoneType(RType):
     def __repr__(self) -> str:
         return "None#"
 
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, RNoneType):
+            return NotImplemented
+        return True
+
 
 class RClassType(RType):
     def __init__(
@@ -165,6 +170,7 @@ class RClassType(RType):
             return f"{name}: {ty_str}"
         fields = ", ".join(map(f, self.fields.items()))
         return f"{self.fullname}({fields})"
+        # return f"{self.fullname}(...)"
 
     def __eq__(self, other: Any) -> bool:
         if not isinstance(other, RClassType):
@@ -502,7 +508,7 @@ class RArith(RExpr):
     def serialize(self) -> JsonDict:
         return {'.class': 'RArith',
                 'lhs': self.lhs.serialize(),
-                'op': op.value,
+                'op': self.op.value,
                 'rhs': self.rhs.serialize(),
                 }
 
@@ -601,7 +607,7 @@ class RCmp(RExpr):
     def serialize(self) -> JsonDict:
         return {'.class': 'RCmp',
                 'lhs': self.lhs.serialize(),
-                'op': op.value,
+                'op': self.op.value,
                 'rhs': self.rhs.serialize(),
                 }
 
@@ -773,7 +779,7 @@ class RTupleExpr(RExpr):
     @classmethod
     def deserialize(cls, data: JsonDict) -> 'RTupleExpr':
         assert data['.class'] == 'RTupleExpr'
-        return RTupleExpr(list(map(RExpr.deserialize, data['expr'])))
+        return RTupleExpr(list(map(RExpr.deserialize, data['members'])))
 
     def __repr__(self) -> str:
         members = ", ".join(map(str, self.members))

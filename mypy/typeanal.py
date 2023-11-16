@@ -459,7 +459,6 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
         """
         # This looks up the definition of the refinement variable.
         sym = self.lookup_qualified(name, ctx)
-        print(name, "sym", sym, "node", sym.node, isinstance(sym.node, RefinementVarExpr))
         if sym is None or sym.node is None:
             # It seems lookup_qualified will throw it's own error.
             # self.fail("Couldn't find symbol related to refinement variable", t)
@@ -505,12 +504,8 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
         props = t.name.split(".")
         name = props[-1]
 
-        print("convert", name)
-
         if not self.validate_refinement_var(t.name, t):
             return None
-
-        print("validated")
 
         options = RefinementOptions.default()
 
@@ -521,8 +516,6 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                 # TODO: I'm going to need a check to make sure Expand is in
                 # scope.
                 options['expand_var'] = True
-
-        print("success")
 
         return RName(name).set_line(t), options
 
